@@ -60,13 +60,66 @@ def get_captions(session_id: str, panopto_client: PanoptoClient) -> str:
     session_info = panopto_client.get_session_info(session_id)
     if session_info:
         logger.info(f"Session: {session_info.get('Name', 'Unknown')}")
-        logger.info(f"Duration: {session_info.get('Duration', 'Unknown')} seconds")
+        duration = session_info.get('Duration', 0)
+        logger.info(f"Duration: {duration} seconds")
+        
+        # Check if session is too recent (might still be processing)
+        import datetime
+        start_time = session_info.get('StartTime')
+        if start_time:
+            try:
+                # Parse the start time and check how recent it is
+                from dateutil import parser
+                session_start = parser.parse(start_time)
+                now = datetime.datetime.now(session_start.tzinfo)
+                hours_since_recording = (now - session_start).total_seconds() / 3600
+                
+                if hours_since_recording < 2:
+                    logger.warning(f"Session recorded only {hours_since_recording:.1f} hours ago - captions may still be processing")
+                    print(f"⚠️  Note: This session was recorded {hours_since_recording:.1f} hours ago.")
+                    print("   Captions may still be processing. Try again in a few hours.")
+            except Exception as e:
+                logger.debug(f"Could not parse start time: {e}")
     
     # Get captions
     captions = panopto_client.get_captions(session_id)
     
     if not captions:
-        raise RuntimeError(f"Failed to retrieve captions for session {session_id}")
+        # Provide helpful error message with troubleshooting steps
+        error_msg = f"Failed to retrieve captions for session {session_id}"
+        logger.error(error_msg)
+        
+        print("\n❌ Could not retrieve captions for this session.")
+        print("\nPossible reasons:")
+        print("1. 🕒 Captions are still being processed (for recent recordings)")
+        print("2. 🚫 Captions are disabled for this session")
+        print("3. 🔒 You may not have permission to access captions")
+        print("4. 📝 This session might not have any spoken content")
+        print("5. 🛠️  The session might be corrupted or have technical issues")
+        
+        print("\nTroubleshooting steps:")
+        print("1. Wait a few hours and try again (especially for recent recordings)")
+        print("2. Check if captions are visible when viewing the session in Panopto web interface")
+        print("3. Contact your Panopto administrator to verify caption settings")
+        print("4. Try a different session ID to test if the issue is session-specific")
+        
+        # Check if we can suggest using the description field instead
+        if session_info and session_info.get('Description'):
+            description = session_info['Description'].strip()
+            if len(description) > 50:
+                print(f"\n💡 Alternative: This session has a description ({len(description)} characters).")
+                print("   You could try summarizing the description instead of captions.")
+                
+                # Ask user if they want to use the description
+                try:
+                    use_description = input("\nWould you like to summarize the session description instead? (y/N): ").strip().lower()
+                    if use_description in ['y', 'yes']:
+                        logger.info("User chose to use session description instead of captions")
+                        return description
+                except (KeyboardInterrupt, EOFError):
+                    pass
+        
+        raise RuntimeError(error_msg)
     
     logger.info(f"Retrieved {len(captions)} characters of caption text")
     return captions

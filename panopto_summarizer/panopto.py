@@ -78,7 +78,7 @@ class PanoptoClient:
                 return None
         
         try:
-            # First, get the session details to find caption information
+            # Get session details first for logging
             session_url = f"{self.base_url}/Panopto/api/v1/sessions/{session_id}"
             response = self.session.get(session_url)
             response.raise_for_status()
@@ -86,25 +86,21 @@ class PanoptoClient:
             session_data = response.json()
             logger.info(f"Retrieved session: {session_data.get('Name', 'Unknown')}")
             
-            # Try multiple approaches to get captions
-            caption_text = None
+            # Check basic caption availability
+            if not self._has_captions_available(session_data):
+                logger.warning(f"Session {session_id} may not have captions available")
             
-            # Approach 1: Try the official Panopto API endpoints first
-            caption_text = self._try_api_endpoints(session_id)
+            # Use direct SRT download (the method that works)
+            caption_text = self._try_direct_srt_download(session_id)
             if caption_text:
                 return caption_text
             
-            # Approach 2: Try the legacy caption download URL
-            caption_text = self._try_legacy_download(session_data, session_id)
-            if caption_text:
-                return caption_text
-            
-            # Approach 3: Try to get captions from session data directly
+            # Fallback: try to extract from session data
             caption_text = self._extract_from_session_data(session_data)
             if caption_text:
                 return caption_text
             
-            logger.warning(f"All caption retrieval methods failed for session {session_id}")
+            logger.warning(f"Caption retrieval failed for session {session_id}")
             return None
                 
         except requests.exceptions.RequestException as e:
@@ -114,275 +110,88 @@ class PanoptoClient:
             logger.error(f"Unexpected error getting captions for session {session_id}: {e}")
             return None
     
-    def _try_api_endpoints(self, session_id: str) -> Optional[str]:
-        """Try official Panopto API endpoints for captions."""
-        # Try different API endpoints that might contain captions
-        api_endpoints = [
-            f"{self.base_url}/Panopto/api/v1/sessions/{session_id}/captions",
-            f"{self.base_url}/Panopto/api/v1/sessions/{session_id}/transcript",
-            f"{self.base_url}/Panopto/api/v1/sessions/{session_id}/transcripts",
-            f"{self.base_url}/Panopto/api/v1/sessions/{session_id}/captions/download",
-            f"{self.base_url}/Panopto/api/v1/sessions/{session_id}/transcript/download",
-            # Try different API versions
-            f"{self.base_url}/Panopto/api/v2/sessions/{session_id}/captions",
-            f"{self.base_url}/Panopto/api/v2/sessions/{session_id}/transcript"
-        ]
+    def _has_captions_available(self, session_data: dict) -> bool:
+        """
+        Check if the session likely has captions available.
         
-        for endpoint in api_endpoints:
-            try:
-                logger.info(f"Trying API endpoint: {endpoint}")
-                
-                # Try GET first
-                response = self.session.get(endpoint)
-                logger.info(f"GET {endpoint} returned status {response.status_code}")
-                
-                if response.status_code == 200 and response.text.strip():
-                    logger.info(f"Successfully retrieved captions from API endpoint: {endpoint}")
-                    return self._parse_caption_content(response.text)
-                
-                # Try POST if GET fails
-                if response.status_code == 405:  # Method Not Allowed
-                    logger.info(f"Trying POST for {endpoint}")
-                    
-                    # Try POST with different request bodies
-                    post_attempts = [
-                        {},  # Empty body
-                        {'format': 'srt'},  # Request SRT format
-                        {'format': 'vtt'},  # Request VTT format
-                        {'language': 'en'},  # Request English language
-                        {'includeTimestamps': False},  # Request without timestamps
-                        {'format': 'srt', 'language': 'en', 'includeTimestamps': False}  # Combined
-                    ]
-                    
-                    for post_data in post_attempts:
-                        try:
-                            logger.info(f"Trying POST with data: {post_data}")
-                            response = self.session.post(endpoint, json=post_data)
-                            logger.info(f"POST {endpoint} with {post_data} returned status {response.status_code}")
-                            
-                            if response.status_code == 200 and response.text.strip():
-                                logger.info(f"Successfully retrieved captions using POST: {endpoint}")
-                                return self._parse_caption_content(response.text)
-                            elif response.status_code == 429:  # Rate limited
-                                logger.info(f"Rate limited (429), waiting before next attempt...")
-                                time.sleep(2)  # Wait 2 seconds before next attempt
-                                continue
-                            elif response.status_code != 500:  # Log non-500 responses for debugging
-                                logger.info(f"POST response: {response.text[:200]}...")
-                        except Exception as e:
-                            logger.info(f"POST with {post_data} failed: {e}")
-                            continue
-                
-            except Exception as e:
-                logger.info(f"Endpoint {endpoint} failed: {e}")
-                continue
-        
-        return None
-    
-    def _try_legacy_download(self, session_data: dict, session_id: str) -> Optional[str]:
-        """Try the legacy caption download URL approach."""
+        Args:
+            session_data: Session data from API
+            
+        Returns:
+            True if captions might be available, False otherwise
+        """
         try:
-            # Check if the session has captions available via the CaptionDownloadUrl
-            urls = session_data.get('Urls', {})
-            caption_download_url = urls.get('CaptionDownloadUrl')
+            # Check duration - very short sessions might not have captions
+            duration = session_data.get('Duration', 0)
+            if duration < 60:  # Less than 1 minute
+                logger.info(f"Session is very short ({duration} seconds), may not have captions")
+                return False
             
-            if not caption_download_url:
-                logger.info("No caption download URL available in session data")
-                return None
+            # If we can't determine, assume captions might be available
+            return True
             
-            logger.info(f"Found caption download URL: {caption_download_url}")
+        except Exception as e:
+            logger.error(f"Error checking caption availability: {e}")
+            return True  # Default to trying
+
+    def _try_direct_srt_download(self, session_id: str) -> Optional[str]:
+        """Try direct SRT download using the known working URL format."""
+        try:
+            # Construct the direct SRT download URL
+            srt_url = f"{self.base_url}/Panopto/Pages/Transcription/GenerateSRT.ashx?id={session_id}&language=English_USA"
+            logger.info(f"Trying direct SRT download: {srt_url}")
             
-            # Get legacy authentication cookie for the caption download endpoint
+            # Get legacy authentication cookie
             legacy_cookie = self._get_legacy_auth_cookie()
             if not legacy_cookie:
                 logger.error("Failed to get legacy authentication cookie")
                 return None
             
-            # Create a new session with the legacy cookie for caption download
+            # Create session with legacy cookie and browser-like headers
             caption_session = requests.Session()
-            caption_session.cookies.set('ASPXAUTH', legacy_cookie, domain='ncsu.hosted.panopto.com')
+            caption_session.cookies.set('.ASPXAUTH', legacy_cookie, domain='ncsu.hosted.panopto.com')
             
-            # Try different approaches for the legacy URL
-            caption_content = None
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1',
+                'Referer': f"{self.base_url}/Panopto/Pages/Viewer.aspx?id={session_id}"
+            }
             
-            # Try GET first
-            try:
-                caption_response = caption_session.get(caption_download_url)
-                caption_response.raise_for_status()
-                caption_content = caption_response.text
-                logger.info(f"Legacy GET successful, content length: {len(caption_content)}")
-            except Exception as e:
-                logger.info(f"Legacy GET failed: {e}")
+            response = caption_session.get(srt_url, headers=headers)
+            logger.info(f"Direct SRT download returned status {response.status_code}")
             
-            # Try POST if GET fails or returns empty content
-            if not caption_content or not caption_content.strip():
-                try:
-                    logger.info("Trying POST for legacy caption download")
-                    caption_response = caption_session.post(caption_download_url)
-                    caption_response.raise_for_status()
-                    caption_content = caption_response.text
-                    logger.info(f"Legacy POST successful, content length: {len(caption_content)}")
-                except Exception as e:
-                    logger.info(f"Legacy POST failed: {e}")
-            
-            # Try with additional headers that might be required
-            if not caption_content or not caption_content.strip():
-                try:
-                    logger.info("Trying with additional headers")
-                    headers = {
-                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-                        'Accept': 'text/plain,text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Accept-Encoding': 'gzip, deflate',
-                        'Referer': f"{self.base_url}/Panopto/Pages/Viewer.aspx?id={session_id}"
-                    }
-                    caption_response = caption_session.get(caption_download_url, headers=headers)
-                    caption_response.raise_for_status()
-                    caption_content = caption_response.text
-                    logger.info(f"Legacy GET with headers successful, content length: {len(caption_content)}")
-                except Exception as e:
-                    logger.info(f"Legacy GET with headers failed: {e}")
-            
-            # Try with language parameter if the URL doesn't have it
-            if not caption_content or not caption_content.strip():
-                try:
-                    logger.info("Trying with explicit language parameter")
-                    if 'language=' not in caption_download_url:
-                        # Add language parameter to the URL
-                        separator = '&' if '?' in caption_download_url else '?'
-                        url_with_language = f"{caption_download_url}{separator}language=English_USA"
-                        logger.info(f"Trying URL with language: {url_with_language}")
-                        
-                        caption_response = caption_session.get(url_with_language, headers=headers)
-                        caption_response.raise_for_status()
-                        caption_content = caption_response.text
-                        logger.info(f"Legacy GET with language parameter successful, content length: {len(caption_content)}")
-                    else:
-                        logger.info("URL already contains language parameter")
-                except Exception as e:
-                    logger.info(f"Legacy GET with language parameter failed: {e}")
-            
-            # Try with different language codes
-            if not caption_content or not caption_content.strip():
-                try:
-                    logger.info("Trying different language codes")
-                    languages = ['English', 'en', 'en-US', 'en_US']
-                    
-                    for lang in languages:
-                        try:
-                            separator = '&' if '?' in caption_download_url else '?'
-                            url_with_lang = f"{caption_download_url}{separator}language={lang}"
-                            logger.info(f"Trying language: {lang}")
-                            
-                            caption_response = caption_session.get(url_with_lang, headers=headers)
-                            caption_response.raise_for_status()
-                            caption_content = caption_response.text
-                            
-                            if caption_content and caption_content.strip():
-                                logger.info(f"Successfully retrieved captions with language {lang}, content length: {len(caption_content)}")
-                                break
-                            else:
-                                logger.info(f"Language {lang} returned empty content")
-                        except Exception as e:
-                            logger.info(f"Language {lang} failed: {e}")
-                            continue
-                            
-                except Exception as e:
-                    logger.info(f"Language parameter approach failed: {e}")
-            
-            if not caption_content or not caption_content.strip():
-                logger.warning(f"All legacy download methods failed for session {session_id}")
-                return None
-            
-            # Parse the caption content
-            caption_text = self._parse_caption_content(caption_content)
-            if caption_text and caption_text.strip():
-                logger.info(f"Successfully retrieved captions via legacy download for session {session_id}")
-                return caption_text.strip()
+            if response.status_code == 200 and response.text.strip():
+                caption_content = response.text.strip()
+                logger.info(f"Successfully retrieved captions via direct SRT, content length: {len(caption_content)}")
+                return self._parse_caption_content(caption_content)
             
             return None
             
         except Exception as e:
-            logger.error(f"Legacy download approach failed: {e}")
+            logger.error(f"Direct SRT download failed: {e}")
             return None
-    
+
     def _extract_from_session_data(self, session_data: dict) -> Optional[str]:
-        """Try to extract captions directly from session data."""
+        """Try to extract captions from session data description field."""
         try:
-            # Log the structure of session data for debugging
-            logger.info(f"Session data keys: {list(session_data.keys())}")
+            # Check if description contains substantial content
+            description = session_data.get('Description', '').strip()
+            if description and len(description) > 50:
+                logger.info(f"Found description content: {len(description)} characters")
+                return description
             
-            # Log the actual values for key fields
-            for key in ['Description', 'Content', 'Summary', 'Transcript']:
-                if key in session_data:
-                    value = session_data[key]
-                    if isinstance(value, str):
-                        logger.info(f"Field '{key}' (string): '{value[:100]}{'...' if len(value) > 100 else ''}'")
-                    else:
-                        logger.info(f"Field '{key}' (type {type(value)}): {value}")
-                else:
-                    logger.info(f"Field '{key}': not present")
-            
-            # Check if captions are embedded in the session data
-            if 'Captions' in session_data:
-                captions = session_data['Captions']
-                logger.info(f"Captions field type: {type(captions)}")
-                if isinstance(captions, list) and captions:
-                    logger.info(f"Found {len(captions)} captions in session data")
-                    caption_text = ""
-                    for i, caption in enumerate(captions[:3]):  # Log first 3 captions
-                        logger.info(f"Caption {i}: {caption}")
-                        if isinstance(caption, dict) and 'Text' in caption:
-                            caption_text += caption['Text'] + " "
-                    if caption_text.strip():
-                        logger.info(f"Successfully extracted captions from session data")
-                        return caption_text.strip()
-                elif isinstance(captions, dict):
-                    logger.info(f"Captions is a dict with keys: {list(captions.keys())}")
-                    if 'Text' in captions:
-                        return str(captions['Text']).strip()
-            
-            # Check other possible fields
-            for field in ['Transcript', 'CaptionText', 'Content', 'Description', 'Summary']:
-                if field in session_data and session_data[field]:
-                    logger.info(f"Found content in session data field: {field}")
-                    content = str(session_data[field])
-                    logger.info(f"Content preview: {content[:200]}...")
-                    logger.info(f"Content length: {len(content.strip())} characters")
-                    if len(content.strip()) > 50:  # Only return if substantial content
-                        logger.info(f"Returning content from field: {field}")
-                        return content.strip()
-                    else:
-                        logger.info(f"Field {field} content too short, skipping")
-                else:
-                    logger.info(f"Field {field}: {'empty' if field in session_data else 'not present'}")
-            
-            # Check if there are any URL fields that might contain captions
-            urls = session_data.get('Urls', {})
-            logger.info(f"URL fields: {list(urls.keys())}")
-            
-            # Check if there are any other fields that might contain text
-            text_fields = []
-            for key, value in session_data.items():
-                if isinstance(value, str) and len(value) > 100:  # Look for long text fields
-                    text_fields.append(key)
-            
-            if text_fields:
-                logger.info(f"Potential text fields: {text_fields}")
-                for field in text_fields:
-                    content = str(session_data[field])
-                    logger.info(f"Field '{field}' content preview: {content[:200]}...")
-                    if any(word in content.lower() for word in ['lecture', 'class', 'course', 'topic', 'discussion']):
-                        logger.info(f"Field '{field}' appears to contain lecture content")
-                        return content.strip()
-            
-            logger.info("No captions found in session data")
+            logger.info("No substantial content found in session data")
             return None
             
         except Exception as e:
-            logger.error(f"Failed to extract captions from session data: {e}")
+            logger.error(f"Failed to extract content from session data: {e}")
             return None
-    
+
     def _get_legacy_auth_cookie(self) -> Optional[str]:
         """
         Get a legacy authentication cookie for use with legacy endpoints.
