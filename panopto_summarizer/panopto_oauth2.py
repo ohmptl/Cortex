@@ -39,7 +39,7 @@ class PanoptoOAuth2:
         
         # Set default token file path
         if token_file is None:
-            token_file = Path.cwd() / '.panopto_tokens.json'
+            token_file = Path(__file__).parent / '.panopto_tokens.json'
         self.token_file = Path(token_file)
         
         # OAuth2 endpoints
@@ -201,12 +201,12 @@ class PanoptoOAuth2:
     
     def _perform_authorization_code_flow(self) -> str:
         """Perform the full authorization code flow."""
-        # Generate authorization URL
+        # Generate authorization URL with offline_access scope for refresh tokens
         auth_params = {
             'response_type': 'code',
             'client_id': self.client_id,
             'redirect_uri': 'http://localhost:8081/callback',
-            'scope': 'api',
+            'scope': 'api offline_access',  # Added offline_access for refresh tokens
             'state': 'panopto_auth'
         }
         
@@ -307,17 +307,27 @@ class PanoptoOAuth2:
     
     def _exchange_code_for_tokens(self, code: str) -> None:
         """Exchange authorization code for access and refresh tokens."""
+        import base64
+        
+        # Use Basic Auth as recommended in Panopto docs
+        credentials = f"{self.client_id}:{self.client_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        
         token_data = {
             'grant_type': 'authorization_code',
-            'client_id': self.client_id,
-            'client_secret': self.client_secret,
             'code': code,
             'redirect_uri': 'http://localhost:8081/callback'
+        }
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': f'Basic {encoded_credentials}'
         }
         
         response = requests.post(
             self.token_url,
             data=token_data,
+            headers=headers,
             verify=self.verify_ssl
         )
         
@@ -335,6 +345,10 @@ class PanoptoOAuth2:
         self.token_expires_at = time.time() + expires_in
         
         logger.info("Successfully obtained access token")
+        if self.refresh_token:
+            logger.info("Successfully obtained refresh token - can refresh without user interaction")
+        else:
+            logger.warning("No refresh token received - user interaction will be required for token renewal")
         
         # Save tokens for future use
         self._save_tokens()
@@ -344,29 +358,43 @@ class PanoptoOAuth2:
         if not self.refresh_token:
             return False
         
+        import base64
+        
+        # Use Basic Auth as recommended in Panopto docs
+        credentials = f"{self.client_id}:{self.client_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        
         token_data = {
             'grant_type': 'refresh_token',
-            'client_id': self.client_id,
-            'client_secret': self.client_secret,
             'refresh_token': self.refresh_token
+        }
+        
+        headers = {
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': f'Basic {encoded_credentials}'
         }
         
         try:
             response = requests.post(
                 self.token_url,
                 data=token_data,
+                headers=headers,
                 verify=self.verify_ssl
             )
             
             if response.status_code != 200:
-                logger.warning(f"Token refresh failed: {response.status_code}")
+                logger.warning(f"Token refresh failed: {response.status_code} - {response.text}")
                 return False
             
             token_response = response.json()
             
             self.access_token = token_response['access_token']
+            # Each refresh returns a new refresh token
             if 'refresh_token' in token_response:
                 self.refresh_token = token_response['refresh_token']
+                logger.info("Received new refresh token")
+            else:
+                logger.warning("No new refresh token in response")
             
             # Calculate expiration time
             expires_in = token_response.get('expires_in', 3600)
@@ -401,16 +429,21 @@ class PanoptoOAuth2:
         
         logger.info("Attempting Client Credentials flow for server-to-server authentication")
         
-        # Prepare Client Credentials request
+        # Prepare Client Credentials request with Basic Auth as per Panopto docs
+        import base64
+        
+        # Create Basic Auth header: base64(<client_id>:<client_secret>)
+        credentials = f"{self.client_id}:{self.client_secret}"
+        encoded_credentials = base64.b64encode(credentials.encode()).decode()
+        
         token_data = {
             'grant_type': 'client_credentials',
-            'client_id': self.client_id,
-            'client_secret': self.client_secret,
-            'scope': 'api'
+            'scope': 'api'  # Server Application clients only get API scope, no offline_access
         }
         
         headers = {
-            'Content-Type': 'application/x-www-form-urlencoded'
+            'Content-Type': 'application/x-www-form-urlencoded',
+            'Authorization': f'Basic {encoded_credentials}'
         }
         
         try:

@@ -17,12 +17,16 @@ from config import Config
 
 def setup_logging(level: str = "INFO") -> None:
     """Setup logging configuration."""
+    # Use script directory for log file
+    script_dir = Path(__file__).parent
+    log_file = script_dir / 'panopto_summarizer.log'
+    
     logging.basicConfig(
         level=getattr(logging, level.upper()),
         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
         handlers=[
             logging.StreamHandler(sys.stdout),
-            logging.FileHandler('panopto_summarizer.log')
+            logging.FileHandler(str(log_file))
         ]
     )
 
@@ -664,12 +668,13 @@ def main():
                 session_name = session_info.get('Name', 'Unknown Session') if session_info else 'Unknown Session'
                 output_filename = create_safe_filename(session_name, session_id)
                 
-                # Create output in Summarized Lectures folder
-                output_dir = ensure_output_directory(".")
+                # Create output in Summarized Lectures folder (in script directory)
+                script_dir = Path(__file__).parent
+                output_dir = ensure_output_directory(str(script_dir))
                 output_file = output_dir / output_filename
             
             # Save formatted summary
-            save_summary(formatted_summary, output_file)
+            save_summary(formatted_summary, str(output_file))
             
             logger.info("Process completed successfully!")
             print(f"\n✅ Summary generated and saved to: {output_file}")
