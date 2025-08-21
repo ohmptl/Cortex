@@ -9,6 +9,8 @@ A Python script that fetches lecture captions from Panopto and generates AI-powe
 - 🔐 **OAuth2 Authentication**: Secure authentication with automatic token persistence
 - 📚 **Batch Processing**: Process multiple sessions in a single run
 - 🖥️ **Server Deployment Ready**: Built-in deployment assessment and guidance
+- 📝 **Smart File Naming**: Uses session names as filenames (e.g., "ECE 301 08-20-25.txt")
+- 📄 **Formatted Summaries**: Includes session metadata and structured headers
 - ⚙️ **Easy Setup**: Interactive configuration with validation
 
 ## Quick Start
@@ -45,7 +47,32 @@ python main.py YOUR_SESSION_ID
 The script will:
 1. 📥 Fetch captions from Panopto
 2. 🤖 Generate an AI summary using Gemini
-3. 💾 Save the summary to `summary.txt` (or your specified file)
+3. � Format the summary with session information header
+4. �💾 Save to a file named after the session (e.g., "ECE 301 08-20-25.txt")
+
+## Smart File Naming & Formatting
+
+### Automatic Filename Generation
+- **Session-based naming**: Files are named using the actual session title
+- **Safe characters**: Problematic characters (/, :, *, etc.) are automatically replaced
+- **Example**: "ECE 301 08/20/25" becomes "ECE 301 08-20-25.txt"
+- **Fallback**: If no session name available, uses session ID
+
+### Formatted Summaries
+Each summary includes:
+```markdown
+# ECE 301 08/20/25
+
+**Session Information:**
+- **Session ID:** eefe1dbd-65f9-45da-8d30-b33a01482b51
+- **Date:** 08/20/24 at 02:30 PM
+- **Duration:** 1h 11m
+
+---
+
+## Summary
+[AI-generated summary content here...]
+```
 
 ## Usage Examples
 

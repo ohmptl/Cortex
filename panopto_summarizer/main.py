@@ -38,7 +38,7 @@ def load_environment() -> Config:
     return config
 
 
-def get_captions(session_id: str, panopto_client: PanoptoClient) -> str:
+def get_captions(session_id: str, panopto_client: PanoptoClient) -> tuple[str, dict]:
     """
     Fetch captions for a given session ID.
     
@@ -47,7 +47,7 @@ def get_captions(session_id: str, panopto_client: PanoptoClient) -> str:
         panopto_client: Initialized Panopto client
         
     Returns:
-        Caption text as plain string
+        Tuple of (caption_text, session_info_dict)
         
     Raises:
         RuntimeError: If captions cannot be retrieved
@@ -115,14 +115,14 @@ def get_captions(session_id: str, panopto_client: PanoptoClient) -> str:
                     use_description = input("\nWould you like to summarize the session description instead? (y/N): ").strip().lower()
                     if use_description in ['y', 'yes']:
                         logger.info("User chose to use session description instead of captions")
-                        return description
+                        return description, session_info
                 except (KeyboardInterrupt, EOFError):
                     pass
         
         raise RuntimeError(error_msg)
     
     logger.info(f"Retrieved {len(captions)} characters of caption text")
-    return captions
+    return captions, session_info
 
 
 def summarize_text(text: str, gemini_client: GeminiClient) -> str:
@@ -173,6 +173,127 @@ def save_summary(summary: str, output_file: str = "summary.txt") -> None:
         raise
 
 
+def create_safe_filename(session_name: str, session_id: str) -> str:
+    """
+    Create a safe filename from session name and ID.
+    
+    Args:
+        session_name: The session name from Panopto
+        session_id: The session ID as fallback
+        
+    Returns:
+        Safe filename string
+    """
+    if not session_name or session_name.strip() == "":
+        # Fallback to session ID if no name
+        return f"{session_id}_summary.txt"
+    
+    # Clean the session name for use as filename
+    # Remove/replace problematic characters
+    safe_name = session_name.strip()
+    
+    # Replace common problematic characters
+    replacements = {
+        '/': '-',
+        '\\': '-', 
+        ':': '-',
+        '*': '',
+        '?': '',
+        '"': '',
+        '<': '',
+        '>': '',
+        '|': '-',
+        '\n': ' ',
+        '\r': ' ',
+        '\t': ' '
+    }
+    
+    for old, new in replacements.items():
+        safe_name = safe_name.replace(old, new)
+    
+    # Collapse multiple spaces/dashes
+    import re
+    safe_name = re.sub(r'\s+', ' ', safe_name)  # Multiple spaces to single
+    safe_name = re.sub(r'-+', '-', safe_name)   # Multiple dashes to single
+    safe_name = safe_name.strip(' -')           # Remove leading/trailing spaces and dashes
+    
+    # Limit length to avoid filesystem issues
+    if len(safe_name) > 100:
+        safe_name = safe_name[:100].rsplit(' ', 1)[0]  # Cut at word boundary
+    
+    # Add session ID for uniqueness if name is very short
+    if len(safe_name) < 5:
+        safe_name = f"{safe_name}_{session_id[:8]}"
+    
+    return f"{safe_name}.txt"
+
+
+def ensure_output_directory(base_path: str = ".") -> Path:
+    """
+    Ensure the 'Summarized Lectures' directory exists and return its path.
+    
+    Args:
+        base_path: Base directory to create the folder in
+        
+    Returns:
+        Path to the Summarized Lectures directory
+    """
+    from pathlib import Path
+    
+    output_dir = Path(base_path) / "Summarized Lectures"
+    output_dir.mkdir(exist_ok=True)
+    
+    return output_dir
+
+
+def format_summary_with_header(summary: str, session_info: dict) -> str:
+    """
+    Format the summary with session information header.
+    
+    Args:
+        summary: The AI-generated summary
+        session_info: Session metadata from Panopto
+        
+    Returns:
+        Formatted summary with header
+    """
+    logger = logging.getLogger(__name__)
+    
+    session_name = session_info.get('Name', 'Unknown Session')
+    session_id = session_info.get('Id', 'Unknown ID')
+    start_time = session_info.get('StartTime', '')
+    duration = session_info.get('Duration', 0)
+    
+    # Log session info for debugging
+    logger.debug(f"Session info keys: {list(session_info.keys())}")
+    logger.debug(f"StartTime value: '{start_time}'")
+    
+    # Format duration
+    duration_str = ""
+    if duration and duration > 0:
+        hours = duration // 3600
+        minutes = (duration % 3600) // 60
+        if hours > 0:
+            duration_str = f"{hours}h {minutes}m"
+        else:
+            duration_str = f"{minutes}m"
+    
+    # Create header
+    header = f"""# {session_name}
+
+**Session Information:**
+- **Session ID:** {session_id}
+- **Duration:** {duration_str}
+
+---
+
+## Summary
+
+"""
+    
+    return header + summary
+
+
 def process_batch_sessions(session_ids: list, panopto_client: PanoptoClient, 
                          gemini_client: GeminiClient, output_dir: str = ".") -> dict:
     """
@@ -182,7 +303,7 @@ def process_batch_sessions(session_ids: list, panopto_client: PanoptoClient,
         session_ids: List of session IDs to process
         panopto_client: Initialized Panopto client
         gemini_client: Initialized Gemini client
-        output_dir: Directory to save results
+        output_dir: Base directory to save results (will create "Summarized Lectures" subfolder)
         
     Returns:
         Dictionary with processing results for each session
@@ -190,8 +311,8 @@ def process_batch_sessions(session_ids: list, panopto_client: PanoptoClient,
     logger = logging.getLogger(__name__)
     results = {}
     
-    output_path = Path(output_dir)
-    output_path.mkdir(exist_ok=True)
+    # Use the Summarized Lectures folder within the specified output directory
+    output_path = ensure_output_directory(output_dir)
     
     print(f"\n🔄 Batch processing {len(session_ids)} sessions...")
     print(f"📁 Output directory: {output_path.absolute()}")
@@ -200,25 +321,25 @@ def process_batch_sessions(session_ids: list, panopto_client: PanoptoClient,
         print(f"\n--- Processing {i}/{len(session_ids)}: {session_id} ---")
         
         try:
-            # Get session info for better file naming
-            session_info = panopto_client.get_session_info(session_id)
-            session_name = session_info.get('Name', session_id) if session_info else session_id
-            
-            # Create safe filename
-            safe_name = "".join(c for c in session_name if c.isalnum() or c in (' ', '-', '_')).rstrip()
-            safe_name = safe_name[:50] if len(safe_name) > 50 else safe_name  # Limit filename length
-            
-            output_file = output_path / f"{session_id}_{safe_name}_summary.txt"
-            
             # Process session
             print(f"📥 Fetching captions...")
-            captions = get_captions(session_id, panopto_client)
+            captions, session_info = get_captions(session_id, panopto_client)
+            
+            # Use session info for better naming
+            session_name = session_info.get('Name', session_id) if session_info else session_id
+            
+            # Create safe filename from session name
+            output_filename = create_safe_filename(session_name, session_id)
+            output_file = output_path / output_filename
             
             print(f"🤖 Generating summary...")
             summary = summarize_text(captions, gemini_client)
             
-            print(f"💾 Saving to {output_file.name}...")
-            save_summary(summary, str(output_file))
+            # Format summary with header
+            formatted_summary = format_summary_with_header(summary, session_info)
+            
+            print(f"💾 Saving to {output_filename}...")
+            save_summary(formatted_summary, str(output_file))
             
             results[session_id] = {
                 'status': 'success',
@@ -525,17 +646,34 @@ def main():
             # Single session processing
             session_id = session_ids[0]
             
-            # Fetch captions
-            captions = get_captions(session_id, panopto_client)
+            # Fetch captions and session info
+            captions, session_info = get_captions(session_id, panopto_client)
             
             # Generate summary
             summary = summarize_text(captions, gemini_client)
             
-            # Save summary
-            save_summary(summary, args.output)
+            # Format summary with header
+            formatted_summary = format_summary_with_header(summary, session_info)
+            
+            # Determine output filename and directory
+            if args.output and args.output != "summary.txt":
+                # User specified a custom output file, use as-is
+                output_file = args.output
+            else:
+                # Use session name for filename in Summarized Lectures folder
+                session_name = session_info.get('Name', 'Unknown Session') if session_info else 'Unknown Session'
+                output_filename = create_safe_filename(session_name, session_id)
+                
+                # Create output in Summarized Lectures folder
+                output_dir = ensure_output_directory(".")
+                output_file = output_dir / output_filename
+            
+            # Save formatted summary
+            save_summary(formatted_summary, output_file)
             
             logger.info("Process completed successfully!")
-            print(f"\n✅ Summary generated and saved to: {args.output}")
+            print(f"\n✅ Summary generated and saved to: {output_file}")
+            print(f"📝 Session: {session_info.get('Name', 'Unknown') if session_info else 'Unknown'}")
             print(f"📝 Session ID: {session_id}")
             print(f"📊 Caption length: {len(captions)} characters")
             print(f"📋 Summary length: {len(summary)} characters")
