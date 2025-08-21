@@ -1,2 +1,4 @@
 .env
 panopto_summarizer.log
+summary.txt
+*.pyc
