@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 class PanoptoClient:
     """Client for interacting with Panopto REST API."""
     
-    def __init__(self, client_id: str, client_secret: str, base_url: str):
+    def __init__(self, client_id: str, client_secret: str, base_url: str, unattended: bool = False):
         """
         Initialize Panopto client.
         
@@ -26,10 +26,12 @@ class PanoptoClient:
             client_id: OAuth2 client ID
             client_secret: OAuth2 client secret
             base_url: Panopto base URL (e.g., https://ncsu.hosted.panopto.com)
+            unattended: If True, prefers Client Credentials for server automation
         """
         self.client_id = client_id
         self.client_secret = client_secret
         self.base_url = base_url.rstrip('/')
+        self.unattended = unattended
         
         # Extract server name from base URL
         parsed_url = urlparse(base_url)
@@ -44,17 +46,26 @@ class PanoptoClient:
         
         self.session = None
         
-    def authenticate(self) -> bool:
+    def authenticate(self, unattended: bool = False) -> bool:
         """
-        Authenticate using OAuth2 Authorization Code flow.
+        Authenticate using OAuth2 flow.
         
+        Args:
+            unattended: If True, attempts Client Credentials flow for server automation
+            
         Returns:
             True if authentication successful, False otherwise
         """
         try:
             # Get authenticated session from OAuth2 client
-            self.session = self.oauth2.get_session_with_auth()
-            self.session.headers.update({'Content-Type': 'application/json'})
+            access_token = self.oauth2.get_access_token_auto(prefer_unattended=unattended)
+            
+            # Create session with auth header
+            self.session = requests.Session()
+            self.session.headers.update({
+                'Authorization': f'Bearer {access_token}',
+                'Content-Type': 'application/json'
+            })
             
             logger.info("Successfully authenticated with Panopto API")
             return True
@@ -74,7 +85,7 @@ class PanoptoClient:
             Caption text as plain string, or None if failed
         """
         if not self.session:
-            if not self.authenticate():
+            if not self.authenticate(unattended=self.unattended):
                 return None
         
         try:
@@ -282,7 +293,7 @@ class PanoptoClient:
             Session information dictionary, or None if failed
         """
         if not self.session:
-            if not self.authenticate():
+            if not self.authenticate(unattended=self.unattended):
                 return None
         
         try:

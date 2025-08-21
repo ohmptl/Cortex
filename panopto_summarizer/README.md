@@ -1,258 +1,267 @@
 # Panopto Lecture Summarizer
 
-A Python application that fetches lecture captions from Panopto using their REST API and generates comprehensive summaries using Google's Gemini AI models.
+A Python script that fetches lecture captions from Panopto and generates AI-powered summaries using Google Gemini.
 
 ## Features
 
-- 🔐 **OAuth2 Authentication**: Secure authentication with Panopto using Client Credentials flow
-- 📝 **Caption Extraction**: Fetches lecture transcripts from Panopto sessions
-- 🤖 **AI Summarization**: Uses Google Gemini to generate intelligent lecture summaries
-- 📁 **File Output**: Saves summaries to text files for easy access
-- 📊 **Comprehensive Logging**: Detailed logging for debugging and monitoring
-- ⚙️ **Configurable**: Easy configuration through environment variables
+- 🎥 **Automated Caption Extraction**: Direct download of captions from Panopto sessions
+- 🤖 **AI-Powered Summaries**: Uses Google Gemini for intelligent text summarization  
+- 🔐 **OAuth2 Authentication**: Secure authentication with automatic token persistence
+- 📚 **Batch Processing**: Process multiple sessions in a single run
+- 🖥️ **Server Deployment Ready**: Built-in deployment assessment and guidance
+- ⚙️ **Easy Setup**: Interactive configuration with validation
 
-## Project Structure
+## Quick Start
 
-```
-panopto_summarizer/
-├── main.py              # Main orchestration script
-├── panopto.py           # Panopto API client
-├── llm.py              # Google Gemini API client
-├── config.py            # Configuration utilities
-├── test_setup.py        # Setup verification script
-├── example.py           # Usage examples and testing
-├── requirements.txt     # Python dependencies
-├── env.example         # Environment variables template
-├── setup.bat            # Windows setup script
-├── setup.sh             # Unix/Linux/macOS setup script
-├── README.md            # This file
-└── summary.txt          # Generated summary output
-```
-
-## Prerequisites
-
-- Python 3.8 or higher
-- Panopto OAuth2 Client ID and Secret
-- Google AI API Key (for Gemini)
-- Access to Panopto REST API
-
-## Installation
-
-### Quick Setup (Recommended)
-
-**Windows:**
-```cmd
-setup.bat
-```
-
-**Unix/Linux/macOS:**
-```bash
-chmod +x setup.sh
-./setup.sh
-```
-
-### Manual Setup
-
-1. **Clone or download the project files**
-
-2. **Install Python dependencies:**
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-3. **Set up environment variables:**
-   ```bash
-   # Option 1: Use the setup command
-   python main.py --setup
-   
-   # Option 2: Manual setup
-   cp env.example .env
-   
-   # Edit .env with your actual credentials
-   nano .env  # or use your preferred editor
-   ```
-
-4. **Configure your .env file:**
-   ```env
-   PANOPTO_CLIENT_ID=your_actual_client_id
-   PANOPTO_CLIENT_SECRET=your_actual_client_secret
-   PANOPTO_BASE_URL=https://your-institution.hosted.panopto.com
-   GEMINI_API_KEY=your_actual_gemini_api_key
-   ```
-
-5. **Verify your setup:**
-   ```bash
-   # Check configuration status
-   python main.py --config-status
-   
-   # Run setup tests
-   python test_setup.py
-   ```
-
-## Usage
-
-### Basic Usage
+### 1. Environment Setup
 
 ```bash
-python main.py SESSION_ID
-```
+# Clone or download the repository
+cd panopto_summarizer
 
-### Advanced Usage
+# Install dependencies
+pip install -r requirements.txt
 
-```bash
-# Specify custom output file
-python main.py SESSION_ID --output my_summary.txt
-
-# Set logging level
-python main.py SESSION_ID --log-level DEBUG
-
-# Get help
-python main.py --help
-```
-
-### Setup and Configuration
-
-```bash
-# Set up environment configuration
+# Run interactive setup
 python main.py --setup
+```
 
-# Check configuration status
+The setup will guide you through configuring:
+- Panopto OAuth2 credentials (Client ID, Secret, Base URL)
+- Google Gemini API key
+
+### 2. First Run
+
+```bash
+# Process a single session
+python main.py YOUR_SESSION_ID
+
+# The first run will open a browser for OAuth2 authorization
+# Subsequent runs will use saved tokens automatically
+```
+
+### 3. Check Your Results
+
+The script will:
+1. 📥 Fetch captions from Panopto
+2. 🤖 Generate an AI summary using Gemini
+3. 💾 Save the summary to `summary.txt` (or your specified file)
+
+## Usage Examples
+
+### Authentication Only (No LLM Usage)
+```bash
+# Run without session ID to authenticate and check token status
+# This will NOT consume any LLM tokens - perfect for testing auth
+python main.py
+
+# If no valid tokens exist, it will automatically:
+# 1. Open your browser for OAuth2 authorization
+# 2. Save tokens for future use  
+# 3. Show token status and readiness
+```
+
+### Single Session Processing
+```bash
+# Basic usage
+python main.py abc123-def456-ghi789
+
+# Custom output file
+python main.py abc123-def456-ghi789 --output lecture1_summary.txt
+```
+
+### Batch Processing
+```bash
+# Process multiple sessions
+python main.py "session1,session2,session3" --batch-output ./summaries/
+
+# Results are saved as: SESSION_ID_SESSION_NAME_summary.txt
+```
+
+### Token Management
+```bash
+# Check token status
+python main.py --token-status
+
+# Clear tokens (force re-authorization)
+python main.py --clear-tokens
+
+# Authentication-only mode (no LLM tokens used)
+python main.py
+
+# Get server deployment guidance
+python main.py --deployment-guide
+```
+
+### Configuration Management
+```bash
+# Check configuration
 python main.py --config-status
 
-# Test project setup
-python test_setup.py
-
-# Run examples with mock data
-python example.py
+# Re-run setup
+python main.py --setup
 ```
 
-### Example
+## Server Deployment
+
+The script includes built-in assessment for server deployment scenarios:
 
 ```bash
-python main.py 12345-67890-abcdef
+python main.py --deployment-guide
 ```
 
-This will:
-1. Authenticate with Panopto using your OAuth2 credentials
-2. Fetch captions for session `12345-67890-abcdef`
-3. Generate a summary using Google Gemini
-4. Save the summary to `summary.txt`
+### Deployment Strategies
+
+1. **🔄 Frequent Execution** (Recommended)
+   - Run every 30-60 minutes via cron/scheduled task
+   - Tokens auto-refresh when possible
+   - Minimal overhead for valid tokens
+
+2. **📅 Batch Processing**
+   - Process multiple sessions per run
+   - Reduce authentication overhead
+   - Example: Daily lecture processing
+
+3. **🔧 Token Monitoring**
+   - Check token status before runs
+   - Set up expiry alerts
+   - Monitor authentication issues
+
+4. **🏠 Local Proxy** (Advanced)
+   - Run on machine with browser access
+   - Expose API for server calls
+   - Handle authentication centrally
+
+### Example Cron Job (Linux/Mac)
+```bash
+# Process session every hour
+0 * * * * cd /path/to/script && python main.py SESSION_ID
+```
+
+### Example Scheduled Task (Windows)
+1. Open Task Scheduler
+2. Create Basic Task → Hourly
+3. Action: Start Program
+4. Program: `python`
+5. Arguments: `main.py SESSION_ID`
+6. Start in: `C:\path\to\script`
 
 ## Configuration
 
-### Panopto Setup
+### Environment Variables
+```bash
+PANOPTO_CLIENT_ID=your_client_id
+PANOPTO_CLIENT_SECRET=your_client_secret
+PANOPTO_BASE_URL=https://your-institution.panopto.com
+GEMINI_API_KEY=your_gemini_api_key
+```
 
-1. **Get OAuth2 Credentials:**
-   - Contact your Panopto administrator
-   - Request OAuth2 Client ID and Secret
-   - Ensure your application has access to the REST API
+### OAuth2 Setup
 
-2. **Base URL:**
-   - Use your institution's Panopto hosted URL
-   - Example: `https://ncsu.hosted.panopto.com`
+1. Log into your Panopto admin panel
+2. Go to System → OAuth2 → Create New Client
+3. Set redirect URI to: `http://localhost:8080/callback`
+4. Note the Client ID and Secret
+5. Use in configuration
 
-### Google Gemini Setup
+### Getting Gemini API Key
 
-1. **Get API Key:**
-   - Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
-   - Create a new API key
-   - Copy the key to your `.env` file
+1. Visit [Google AI Studio](https://makersuite.google.com/app/apikey)
+2. Create a new API key
+3. Add to your configuration
 
-## API Endpoints
+## Command Line Options
 
-The application uses the following Panopto API endpoints:
+```bash
+usage: main.py [-h] [--output OUTPUT] [--log-level {DEBUG,INFO,WARNING,ERROR}] 
+               [--clear-tokens] [--token-status] [--deployment-guide] 
+               [--batch-output BATCH_OUTPUT] [--setup] [--config-status]
+               [session_id]
 
-- **Authentication**: `POST /Panopto/oauth2/connect/token`
-- **Session Info**: `GET /Panopto/api/v1/sessions/{sessionId}`
-- **Captions**: `GET /Panopto/api/v1/sessions/{sessionId}/captions`
+Arguments:
+  session_id              Session ID or comma-separated list for batch processing
 
-## Error Handling
-
-The application includes comprehensive error handling for:
-
-- Missing environment variables
-- Authentication failures
-- API request errors
-- Network connectivity issues
-- Invalid session IDs
-- Empty caption data
-
-## Logging
-
-Logs are written to both:
-- **Console**: Real-time output during execution
-- **File**: `panopto_summarizer.log` for persistent logging
-
-Log levels: `DEBUG`, `INFO`, `WARNING`, `ERROR`
+Options:
+  --output, -o            Output file (default: summary.txt)
+  --log-level             Logging level (DEBUG/INFO/WARNING/ERROR)
+  --clear-tokens          Clear stored tokens, force re-auth
+  --token-status          Show current token status
+  --deployment-guide      Show server deployment recommendations
+  --batch-output          Directory for batch processing results
+  --setup                 Interactive environment setup
+  --config-status         Show configuration validation
+```
 
 ## Troubleshooting
 
 ### Common Issues
 
-1. **Authentication Failed**
-   - Verify your OAuth2 credentials
-   - Check that your Panopto base URL is correct
-   - Ensure your application has API access
+**❌ "Failed to retrieve captions"**
+- Captions may still be processing (wait 2+ hours for new recordings)
+- Check if captions are enabled in Panopto settings
+- Verify you have permission to access captions
+- Try accessing the session in Panopto web interface first
 
-2. **No Captions Found**
-   - Verify the session ID is correct
-   - Check that the session has captions enabled
-   - Ensure your credentials have access to the session
+**❌ "Configuration error: Missing required environment variables"**
+- Run `python main.py --setup` to configure
+- Check `.env` file exists and has all required variables
+- Use `python main.py --config-status` to validate
 
-3. **Gemini API Errors**
-   - Verify your Google AI API key
-   - Check your internet connection
-   - Ensure you have sufficient API quota
+**❌ "Token expired" or authentication errors**
+- Run `python main.py --clear-tokens` to force re-authentication
+- Check `python main.py --token-status` for token health
+- Tokens typically expire after 1-4 hours
+
+**❌ Gemini API errors**
+- Verify API key is correct and has quota remaining
+- Check Google AI Studio for API key status
+- Some text may be too long - try shorter content
 
 ### Debug Mode
-
-Run with debug logging for detailed information:
-
 ```bash
 python main.py SESSION_ID --log-level DEBUG
 ```
 
+## File Structure
+
+```
+panopto_summarizer/
+├── main.py              # Main script with CLI interface
+├── panopto.py           # Panopto API client
+├── panopto_oauth2.py    # OAuth2 authentication handler  
+├── llm.py               # Gemini AI client
+├── config.py            # Configuration management
+├── requirements.txt     # Python dependencies
+├── .env.example         # Environment template
+├── .env                 # Your configuration (created by setup)
+├── .panopto_tokens.json # Stored OAuth2 tokens (auto-created)
+└── summary.txt          # Generated summaries (default output)
+```
+
+## Token Persistence
+
+The script automatically saves OAuth2 tokens to `.panopto_tokens.json`:
+- ✅ Eliminates repeated browser authentication
+- ✅ Works across script runs
+- ✅ Handles token validation and expiry
+- ⚠️ Limited by Panopto's token lifetime (typically 1-4 hours)
+
+**Note**: Panopto may not provide refresh tokens, requiring periodic re-authorization.
+
 ## Security Notes
 
-- Never commit your `.env` file to version control
-- Keep your OAuth2 credentials and API keys secure
-- Use environment variables in production deployments
-- Regularly rotate your API keys
+- 🔒 Store `.env` and `.panopto_tokens.json` securely
+- 🚫 Never commit secrets to version control
+- 🔄 Tokens expire automatically for security
+- 🛡️ Use environment variables in production
 
 ## Dependencies
 
-- **requests**: HTTP library for API calls
-- **python-dotenv**: Environment variable management
-- **google-generativeai**: Google Gemini AI SDK
-- **oauthlib**: OAuth2 implementation
-- **requests-oauthlib**: OAuth2 session management
-
-## Contributing
-
-1. Fork the repository
-2. Create a feature branch
-3. Make your changes
-4. Add tests if applicable
-5. Submit a pull request
+- `requests` - HTTP client for API calls
+- `google-generativeai` - Google Gemini AI client  
+- `python-dotenv` - Environment variable management
+- `python-dateutil` - Date parsing utilities
 
 ## License
 
-This project is open source and available under the MIT License.
-
-## Support
-
-For issues and questions:
-1. Check the troubleshooting section
-2. Review the logs for error details
-3. Verify your configuration
-4. Open an issue with detailed information
-
-## Changelog
-
-### Version 1.0.0
-- Initial release
-- Panopto OAuth2 authentication
-- Caption extraction
-- Gemini AI summarization
-- File output functionality
-- Comprehensive logging
+This project is open source. Please ensure compliance with your institution's Panopto terms of service and API usage policies.

@@ -95,6 +95,26 @@ class Config:
         validation_results = self.validate_config()
         return all(validation_results.values())
     
+    @property
+    def panopto_client_id(self) -> str:
+        """Get Panopto client ID."""
+        return self.get_required('PANOPTO_CLIENT_ID')
+    
+    @property
+    def panopto_client_secret(self) -> str:
+        """Get Panopto client secret."""
+        return self.get_required('PANOPTO_CLIENT_SECRET')
+    
+    @property
+    def panopto_base_url(self) -> str:
+        """Get Panopto base URL."""
+        return self.get_required('PANOPTO_BASE_URL')
+    
+    @property
+    def gemini_api_key(self) -> str:
+        """Get Gemini API key."""
+        return self.get_required('GEMINI_API_KEY')
+    
     def get_panopto_config(self) -> Dict[str, str]:
         """
         Get Panopto-specific configuration.

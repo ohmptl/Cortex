@@ -1,4 +1,5 @@
 .env
+.panopto_tokens.json
 panopto_summarizer.log
 summary.txt
 *.pyc
