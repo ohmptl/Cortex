@@ -41,7 +41,7 @@ Future goals include turning Cortex into a **fully functional AI Agent** that:
 ## 🛠️ Tech Stack (Planned)
 - **Backend**: Python (Flask/FastAPI)  
 - **AI/ML**: LLMs for summarization + classification  
-- **Database**: Notion API + SQL backend (for tracking state)  
+- **Database**: Notion API
 - **Integrations**:  
   - Notion (assignments, deadlines, tasks)  
   - Discord Bot (notifications & summaries)  
