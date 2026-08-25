@@ -16,6 +16,7 @@ interface AssignmentRowProps {
   course: Course | undefined;
   onToggleComplete: (id: string, completed: boolean) => void;
   onDelete: (id: string) => void;
+  onEdit: (assignment: Assignment) => void;
 }
 
 export function AssignmentRow({
@@ -23,6 +24,7 @@ export function AssignmentRow({
   course,
   onToggleComplete,
   onDelete,
+  onEdit,
 }: AssignmentRowProps) {
   const completed = assignment.status === "completed";
   const { primary, secondary, color } = formatDeadline(assignment.deadline, completed);
@@ -38,7 +40,7 @@ export function AssignmentRow({
         style={{ backgroundColor: accent }}
       />
 
-      <div className="min-w-0 flex-1">
+      <div className="min-w-0 flex-1 cursor-pointer" onClick={() => onEdit(assignment)}>
         <p
           className={`truncate text-sm font-medium ${
             completed ? "text-text-faint line-through" : "text-text"

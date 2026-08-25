@@ -1,20 +1,28 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { useCourseStore } from "@/store/courseStore";
 import { useAssignmentStore } from "@/store/assignmentStore";
 import { CourseForm } from "@/components/courses/CourseForm";
 import { CourseCard } from "@/components/courses/CourseCard";
 import { SyllabusImport } from "@/components/courses/SyllabusImport";
+import { CourseEditModal } from "@/components/courses/CourseEditModal";
+import type { Course } from "@/types/course";
 
 export default function CoursesPage() {
   const { courses, loadCourses, addCourse, removeCourse, pushCourse } = useCourseStore();
   const { assignments, loadAssignments } = useAssignmentStore();
+  const [editingCourse, setEditingCourse] = useState<Course | null>(null);
 
   useEffect(() => {
     loadCourses();
     loadAssignments();
   }, [loadCourses, loadAssignments]);
+
+  // Keep the modal's course in sync with store updates (e.g. after saving a grade)
+  const liveEditingCourse = editingCourse
+    ? courses.find((c) => c.id === editingCourse.id) ?? null
+    : null;
 
   return (
     <div className="p-6">
@@ -33,9 +41,12 @@ export default function CoursesPage() {
             course={course}
             assignments={assignments.filter((a) => a.courseId === course.id)}
             onDelete={removeCourse}
+            onEdit={setEditingCourse}
           />
         ))}
       </div>
+
+      <CourseEditModal course={liveEditingCourse} onClose={() => setEditingCourse(null)} />
     </div>
   );
 }

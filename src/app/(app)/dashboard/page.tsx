@@ -1,14 +1,17 @@
 "use client";
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useAssignmentStore } from "@/store/assignmentStore";
 import { useCourseStore } from "@/store/courseStore";
 import { AssignmentRow } from "@/components/assignments/AssignmentRow";
+import { AssignmentEditModal } from "@/components/assignments/AssignmentEditModal";
+import type { Assignment } from "@/types/assignment";
 
 export default function DashboardPage() {
-  const { assignments, loadAssignments, setCompleted, removeAssignment } =
+  const { assignments, loadAssignments, editAssignment, setCompleted, removeAssignment } =
     useAssignmentStore();
   const { courses, loadCourses } = useCourseStore();
+  const [editingAssignment, setEditingAssignment] = useState<Assignment | null>(null);
 
   useEffect(() => {
     loadAssignments();
@@ -81,6 +84,7 @@ export default function DashboardPage() {
               course={a.courseId ? courseById.get(a.courseId) : undefined}
               onToggleComplete={setCompleted}
               onDelete={removeAssignment}
+              onEdit={setEditingAssignment}
             />
           ))}
         </div>
@@ -99,11 +103,20 @@ export default function DashboardPage() {
                 course={a.courseId ? courseById.get(a.courseId) : undefined}
                 onToggleComplete={setCompleted}
                 onDelete={removeAssignment}
+                onEdit={setEditingAssignment}
               />
             ))}
           </div>
         </div>
       )}
+
+      <AssignmentEditModal
+        assignment={editingAssignment}
+        courses={courses}
+        onClose={() => setEditingAssignment(null)}
+        onSave={editAssignment}
+        onDelete={removeAssignment}
+      />
     </div>
   );
 }

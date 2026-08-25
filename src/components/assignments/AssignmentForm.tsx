@@ -16,6 +16,8 @@ const CATEGORIES: AssignmentCategory[] = [
   "other",
 ];
 
+export { CATEGORIES };
+
 interface AssignmentFormProps {
   courses: Course[];
   onSubmit: (form: AssignmentFormData) => Promise<void>;

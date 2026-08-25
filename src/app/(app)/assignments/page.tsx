@@ -5,15 +5,18 @@ import { useAssignmentStore } from "@/store/assignmentStore";
 import { useCourseStore } from "@/store/courseStore";
 import { AssignmentForm } from "@/components/assignments/AssignmentForm";
 import { AssignmentRow } from "@/components/assignments/AssignmentRow";
+import { AssignmentEditModal } from "@/components/assignments/AssignmentEditModal";
+import type { Assignment } from "@/types/assignment";
 
 type Filter = "active" | "week" | "overdue" | "completed";
 
 export default function AssignmentsPage() {
-  const { assignments, loadAssignments, addAssignment, setCompleted, removeAssignment } =
+  const { assignments, loadAssignments, addAssignment, editAssignment, setCompleted, removeAssignment } =
     useAssignmentStore();
   const { courses, loadCourses } = useCourseStore();
   const [search, setSearch] = useState("");
   const [filter, setFilter] = useState<Filter>("active");
+  const [editingAssignment, setEditingAssignment] = useState<Assignment | null>(null);
 
   useEffect(() => {
     loadAssignments();
@@ -99,9 +102,18 @@ export default function AssignmentsPage() {
             course={a.courseId ? courseById.get(a.courseId) : undefined}
             onToggleComplete={setCompleted}
             onDelete={removeAssignment}
+            onEdit={setEditingAssignment}
           />
         ))}
       </div>
+
+      <AssignmentEditModal
+        assignment={editingAssignment}
+        courses={courses}
+        onClose={() => setEditingAssignment(null)}
+        onSave={editAssignment}
+        onDelete={removeAssignment}
+      />
     </div>
   );
 }

@@ -2,20 +2,23 @@
 
 import type { Assignment } from "@/types/assignment";
 import type { Course } from "@/types/course";
+import { calculateOverallGrade } from "@/lib/utils/grades";
 
 interface CourseCardProps {
   course: Course;
   assignments: Assignment[];
   onDelete: (id: string) => void;
+  onEdit: (course: Course) => void;
 }
 
-export function CourseCard({ course, assignments, onDelete }: CourseCardProps) {
+export function CourseCard({ course, assignments, onDelete, onEdit }: CourseCardProps) {
   const total = assignments.length;
   const done = assignments.filter((a) => a.status === "completed").length;
   const overdue = assignments.filter(
     (a) => a.status !== "completed" && new Date(a.deadline) < new Date()
   ).length;
   const pct = total === 0 ? 0 : Math.round((done / total) * 100);
+  const grade = calculateOverallGrade(course);
 
   return (
     <div className="group relative overflow-hidden rounded-lg border border-border bg-bg-elevated">
@@ -34,9 +37,14 @@ export function CourseCard({ course, assignments, onDelete }: CourseCardProps) {
               <p className="text-xs text-text-faint">{course.instructor}</p>
             )}
           </div>
-          <span className="text-lg font-semibold" style={{ color: course.color }}>
-            {pct}%
-          </span>
+          <div className="text-right">
+            <span className="text-lg font-semibold" style={{ color: course.color }}>
+              {pct}%
+            </span>
+            {grade !== null && (
+              <p className="text-[11px] text-text-faint">grade {grade.toFixed(0)}%</p>
+            )}
+          </div>
         </div>
 
         <div className="mt-3 h-1.5 w-full overflow-hidden rounded-full bg-bg">
@@ -50,6 +58,12 @@ export function CourseCard({ course, assignments, onDelete }: CourseCardProps) {
           <span>{total} total</span>
           <span className="text-green">{done} done</span>
           {overdue > 0 && <span className="text-red">{overdue} overdue</span>}
+          <button
+            onClick={() => onEdit(course)}
+            className="ml-auto text-text-faint hover:text-text"
+          >
+            Edit
+          </button>
         </div>
       </div>
 
