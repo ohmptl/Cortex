@@ -25,32 +25,6 @@ async function restCall<T>(
   return data as T;
 }
 
-// Exchanges a username/password for a persistent web service token, the way
-// the Moodle mobile app does (requires the site to enable that service).
-export async function obtainMoodleToken(
-  url: string,
-  username: string,
-  password: string
-): Promise<{ token: string } | { error: string }> {
-  const query = new URLSearchParams({
-    username,
-    password,
-    service: "moodle_mobile_app",
-  });
-
-  const res = await fetch(`${normalizeUrl(url)}/login/token.php?${query.toString()}`);
-  const data = await res.json();
-
-  if (data?.error) {
-    return { error: data.error };
-  }
-  if (!data?.token) {
-    return { error: "Moodle did not return a token" };
-  }
-
-  return { token: data.token };
-}
-
 export async function verifyMoodleToken(
   url: string,
   token: string

@@ -104,7 +104,7 @@ function MoodleSection() {
     useMoodleStore();
   const [formUrl, setFormUrl] = useState("");
   const [formUsername, setFormUsername] = useState("");
-  const [formPassword, setFormPassword] = useState("");
+  const [formToken, setFormToken] = useState("");
 
   useEffect(() => {
     checkStatus();
@@ -154,7 +154,7 @@ function MoodleSection() {
         <form
           onSubmit={(e) => {
             e.preventDefault();
-            connect({ url: formUrl, username: formUsername, password: formPassword });
+            connect({ url: formUrl, username: formUsername, token: formToken });
           }}
           className="flex flex-col gap-2"
         >
@@ -171,12 +171,17 @@ function MoodleSection() {
             className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-text outline-none focus:border-accent-border"
           />
           <input
-            type="password"
-            value={formPassword}
-            onChange={(e) => setFormPassword(e.target.value)}
-            placeholder="Password"
+            value={formToken}
+            onChange={(e) => setFormToken(e.target.value)}
+            placeholder="Web service token"
             className="rounded-md border border-border bg-bg-elevated px-3 py-2 text-sm text-text outline-none focus:border-accent-border"
           />
+          <p className="text-[11px] text-text-faint">
+            Generate a token under Moodle → Preferences → Security keys (if enabled), or ask
+            your school&apos;s Moodle admin for a web service token for the &quot;Moodle mobile
+            web service&quot;.
+          </p>
+
           {error && <p className="text-xs text-red">{error}</p>}
           <button
             type="submit"

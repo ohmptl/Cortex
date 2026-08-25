@@ -9,7 +9,7 @@ interface MoodleState {
   error: string | null;
 
   checkStatus: () => Promise<void>;
-  connect: (form: { url: string; username: string; token?: string; password?: string }) => Promise<void>;
+  connect: (form: { url: string; username: string; token: string }) => Promise<void>;
   disconnect: () => Promise<void>;
 }
 

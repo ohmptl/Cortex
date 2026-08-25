@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
-import { obtainMoodleToken, verifyMoodleToken } from "@/lib/moodle/client";
+import { verifyMoodleToken } from "@/lib/moodle/client";
 import { encrypt } from "@/lib/crypto";
 
 export async function POST(request: Request) {
@@ -13,10 +13,10 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  const { url, username, token, password } = await request.json();
-  if (!url || !username || (!token && !password)) {
+  const { url, username, token } = await request.json();
+  if (!url || !username || !token) {
     return NextResponse.json(
-      { error: "URL, username, and a token or password are required" },
+      { error: "URL, username, and token are required" },
       { status: 400 }
     );
   }
@@ -26,21 +26,12 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Server missing MOODLE_ENCRYPTION_KEY" }, { status: 500 });
   }
 
-  let wsToken: string = token;
-  if (!wsToken) {
-    const result = await obtainMoodleToken(url, username, password);
-    if ("error" in result) {
-      return NextResponse.json({ error: result.error }, { status: 401 });
-    }
-    wsToken = result.token;
-  }
-
-  const verified = await verifyMoodleToken(url, wsToken);
+  const verified = await verifyMoodleToken(url, token);
   if ("error" in verified) {
     return NextResponse.json({ error: verified.error }, { status: 401 });
   }
 
-  const encryptedCredential = encrypt(wsToken, encryptionKey);
+  const encryptedCredential = encrypt(token, encryptionKey);
 
   const { error } = await supabase.from("integrations").upsert({
     owner_id: user.id,

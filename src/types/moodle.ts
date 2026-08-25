@@ -8,9 +8,7 @@ export interface MoodleIntegration {
 export interface MoodleConnectRequest {
   url: string
   username: string
-  // one of these — token auth is preferred, password is a fallback
-  token?: string
-  password?: string
+  token: string
 }
 
 export interface MoodleAssignment {
