@@ -13,7 +13,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("integrations")
-    .select("url, username, last_sync")
+    .select("url, username, last_sync, syncing")
     .eq("owner_id", user.id)
     .eq("service", "moodle")
     .maybeSingle();
@@ -31,5 +31,6 @@ export async function GET() {
     url: data.url,
     username: data.username,
     lastSync: data.last_sync,
+    syncing: data.syncing,
   });
 }

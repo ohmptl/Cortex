@@ -5,6 +5,7 @@ interface MoodleState {
   url: string | null;
   username: string | null;
   lastSync: string | null;
+  syncing: boolean;
   isLoading: boolean;
   error: string | null;
 
@@ -18,6 +19,7 @@ export const useMoodleStore = create<MoodleState>((set) => ({
   url: null,
   username: null,
   lastSync: null,
+  syncing: false,
   isLoading: false,
   error: null,
 
@@ -29,6 +31,7 @@ export const useMoodleStore = create<MoodleState>((set) => ({
       url: data.url ?? null,
       username: data.username ?? null,
       lastSync: data.lastSync ?? null,
+      syncing: !!data.syncing,
     });
   },
 

@@ -13,7 +13,7 @@ export async function GET() {
 
   const { data, error } = await supabase
     .from("integrations")
-    .select("email, last_sync, token_expiry")
+    .select("email, last_sync, syncing, token_expiry")
     .eq("owner_id", user.id)
     .eq("service", "gradescope")
     .maybeSingle();
@@ -30,6 +30,7 @@ export async function GET() {
     connected: true,
     email: data.email,
     lastSync: data.last_sync,
+    syncing: data.syncing,
     tokenExpiry: data.token_expiry,
   });
 }

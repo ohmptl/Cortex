@@ -4,6 +4,7 @@ interface GradescopeState {
   connected: boolean;
   email: string | null;
   lastSync: string | null;
+  syncing: boolean;
   isLoading: boolean;
   error: string | null;
 
@@ -16,6 +17,7 @@ export const useGradescopeStore = create<GradescopeState>((set) => ({
   connected: false,
   email: null,
   lastSync: null,
+  syncing: false,
   isLoading: false,
   error: null,
 
@@ -26,6 +28,7 @@ export const useGradescopeStore = create<GradescopeState>((set) => ({
       connected: !!data.connected,
       email: data.email ?? null,
       lastSync: data.lastSync ?? null,
+      syncing: !!data.syncing,
     });
   },
 

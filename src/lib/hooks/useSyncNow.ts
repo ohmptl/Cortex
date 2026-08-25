@@ -1,67 +1,56 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 
-const POLL_INTERVAL_MS = 4000;
-const MAX_POLLS = 20; // ~80s before giving up and assuming it's still running
+interface SyncNowResult {
+  ran: boolean;
+  synced: number;
+  conflicts?: number;
+  error?: string;
+}
 
-// Drives a "Sync now" button: triggers the GitHub Actions sync workflow, then
-// polls the integration's status until last_sync changes (or times out).
-export function useSyncNow(lastSync: string | null, checkStatus: () => Promise<void>) {
+// Drives a "Sync now" button: runs the sync inline (via /api/sync/now) and
+// waits for the real result — no polling needed since it's synchronous.
+// Overrides any background (GitHub Actions) sync that might be in progress.
+export function useSyncNow(
+  service: "gradescope" | "moodle",
+  checkStatus: () => Promise<void>
+) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
-  const syncedFromRef = useRef<string | null>(null);
-  const pollsRef = useRef(0);
 
   const triggerSync = useCallback(async () => {
-    if (isSyncing) return; // don't queue up duplicate triggers from repeated clicks
+    if (isSyncing) return;
 
+    setIsSyncing(true);
     setMessage("Syncing…");
-    syncedFromRef.current = lastSync;
-    pollsRef.current = 0;
 
     try {
-      const res = await fetch("/api/sync/trigger", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ force: true }),
-      });
+      const res = await fetch("/api/sync/now", { method: "POST" });
       const data = await res.json().catch(() => ({}));
 
-      if (!res.ok || data.error) {
-        setMessage(data.error || "Failed to start sync");
+      if (!res.ok) {
+        setMessage(data.error || "Failed to sync");
         return;
       }
 
-      setIsSyncing(true);
+      const result: SyncNowResult | undefined = data[service];
+      if (!result) {
+        setMessage("Sync finished");
+      } else if (result.error) {
+        setMessage(result.error);
+      } else if (service === "gradescope") {
+        setMessage(`Synced ${result.synced} new, ${result.conflicts ?? 0} conflict(s)`);
+      } else {
+        setMessage(`Synced ${result.synced} new assignment(s)`);
+      }
     } catch {
       setMessage("Failed to reach the server");
-    }
-  }, [isSyncing, lastSync]);
-
-  // Poll status while syncing, and stop once last_sync moves past when we started.
-  useEffect(() => {
-    if (!isSyncing) return;
-
-    const interval = setInterval(async () => {
-      pollsRef.current += 1;
-      await checkStatus();
-
-      if (pollsRef.current >= MAX_POLLS) {
-        setIsSyncing(false);
-        setMessage("Still running in the background — check back shortly");
-      }
-    }, POLL_INTERVAL_MS);
-
-    return () => clearInterval(interval);
-  }, [isSyncing, checkStatus]);
-
-  useEffect(() => {
-    if (isSyncing && lastSync && lastSync !== syncedFromRef.current) {
+    } finally {
       setIsSyncing(false);
-      setMessage("Synced just now");
+      await checkStatus();
     }
-  }, [lastSync, isSyncing]);
+  }, [isSyncing, service, checkStatus]);
 
   return { isSyncing, message, triggerSync };
 }

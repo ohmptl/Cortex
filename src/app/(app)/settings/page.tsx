@@ -18,15 +18,28 @@ export default function SettingsPage() {
 }
 
 function GradescopeSection() {
-  const { connected, email, lastSync, isLoading, error, checkStatus, connect, disconnect } =
+  const { connected, email, lastSync, syncing, isLoading, error, checkStatus, connect, disconnect } =
     useGradescopeStore();
   const [formEmail, setFormEmail] = useState("");
   const [password, setPassword] = useState("");
-  const { isSyncing, message: syncMessage, triggerSync } = useSyncNow(lastSync, checkStatus);
+  const { isSyncing, message: syncMessage, triggerSync } = useSyncNow("gradescope", checkStatus);
 
   useEffect(() => {
     checkStatus();
   }, [checkStatus]);
+
+  // Reflect a background (auto-triggered) sync that's still running elsewhere.
+  useEffect(() => {
+    if (!syncing || isSyncing) return;
+    const interval = setInterval(checkStatus, 4000);
+    return () => clearInterval(interval);
+  }, [syncing, isSyncing, checkStatus]);
+
+  const statusText = isSyncing
+    ? syncMessage
+    : syncing
+      ? "Syncing in the background…"
+      : syncMessage ?? `Last synced: ${lastSync ? new Date(lastSync).toLocaleString() : "never"}`;
 
   return (
     <section>
@@ -44,11 +57,7 @@ function GradescopeSection() {
       {connected ? (
         <div className="rounded-lg border border-border bg-bg-elevated p-3 text-sm">
           <p className="text-text">{email}</p>
-          <p className="text-xs text-text-faint">
-            {isSyncing || syncMessage
-              ? syncMessage
-              : `Last synced: ${lastSync ? new Date(lastSync).toLocaleString() : "never"}`}
-          </p>
+          <p className="text-xs text-text-faint">{statusText}</p>
           <div className="mt-2 flex gap-2">
             <button
               onClick={triggerSync}
@@ -101,16 +110,29 @@ function GradescopeSection() {
 }
 
 function MoodleSection() {
-  const { connected, url, username, lastSync, isLoading, error, checkStatus, connect, disconnect } =
+  const { connected, url, username, lastSync, syncing, isLoading, error, checkStatus, connect, disconnect } =
     useMoodleStore();
   const [formUrl, setFormUrl] = useState("");
   const [formUsername, setFormUsername] = useState("");
   const [formToken, setFormToken] = useState("");
-  const { isSyncing, message: syncMessage, triggerSync } = useSyncNow(lastSync, checkStatus);
+  const { isSyncing, message: syncMessage, triggerSync } = useSyncNow("moodle", checkStatus);
 
   useEffect(() => {
     checkStatus();
   }, [checkStatus]);
+
+  // Reflect a background (auto-triggered) sync that's still running elsewhere.
+  useEffect(() => {
+    if (!syncing || isSyncing) return;
+    const interval = setInterval(checkStatus, 4000);
+    return () => clearInterval(interval);
+  }, [syncing, isSyncing, checkStatus]);
+
+  const statusText = isSyncing
+    ? syncMessage
+    : syncing
+      ? "Syncing in the background…"
+      : syncMessage ?? `Last synced: ${lastSync ? new Date(lastSync).toLocaleString() : "never"}`;
 
   return (
     <section>
@@ -130,11 +152,7 @@ function MoodleSection() {
           <p className="text-text">
             {username}@{url}
           </p>
-          <p className="text-xs text-text-faint">
-            {isSyncing || syncMessage
-              ? syncMessage
-              : `Last synced: ${lastSync ? new Date(lastSync).toLocaleString() : "never"}`}
-          </p>
+          <p className="text-xs text-text-faint">{statusText}</p>
           <div className="mt-2 flex gap-2">
             <button
               onClick={triggerSync}

@@ -1,9 +1,14 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@/lib/supabase/server";
 
-const STALE_AFTER_MS = 5 * 60 * 1000; // don't re-trigger more than every 5 minutes
+// Debounce for the automatic on-visit trigger. Manual syncs go through
+// /api/sync/now instead and don't touch this route at all.
+const STALE_AFTER_MS = 5 * 60 * 1000;
+// If something crashed mid-sync and never cleared `syncing`, don't let that
+// lock out future auto-triggers forever.
+const SYNC_LOCK_TIMEOUT_MS = 5 * 60 * 1000;
 
-export async function POST(request: Request) {
+export async function POST() {
   const supabase = await createClient();
   const {
     data: { user },
@@ -13,17 +18,9 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
   }
 
-  let force = false;
-  try {
-    const body = await request.json();
-    force = !!body?.force;
-  } catch {
-    // no body — treat as a non-forced (auto, on-visit) trigger
-  }
-
   const { data: integrations, error } = await supabase
     .from("integrations")
-    .select("service, last_sync")
+    .select("service, last_attempt, syncing")
     .eq("owner_id", user.id);
 
   if (error) {
@@ -35,11 +32,21 @@ export async function POST(request: Request) {
   }
 
   const now = Date.now();
-  const isStale = integrations.some(
-    (i) => !i.last_sync || now - new Date(i.last_sync).getTime() > STALE_AFTER_MS
-  );
 
-  if (!force && !isStale) {
+  const alreadySyncing = integrations.some(
+    (i) =>
+      i.syncing &&
+      i.last_attempt &&
+      now - new Date(i.last_attempt).getTime() < SYNC_LOCK_TIMEOUT_MS
+  );
+  if (alreadySyncing) {
+    return NextResponse.json({ triggered: false, reason: "sync already in progress" });
+  }
+
+  const isStale = integrations.some(
+    (i) => !i.last_attempt || now - new Date(i.last_attempt).getTime() > STALE_AFTER_MS
+  );
+  if (!isStale) {
     return NextResponse.json({ triggered: false, reason: "recently synced" });
   }
 
@@ -72,6 +79,13 @@ export async function POST(request: Request) {
       { status: 502 }
     );
   }
+
+  // Mark as in-progress immediately — the workflow itself will flip `syncing`
+  // back to false (and set last_sync) once it actually finishes.
+  await supabase
+    .from("integrations")
+    .update({ syncing: true, last_attempt: new Date().toISOString() })
+    .eq("owner_id", user.id);
 
   return NextResponse.json({ triggered: true });
 }

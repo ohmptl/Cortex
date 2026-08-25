@@ -23,6 +23,7 @@ create table if not exists courses (
 
 alter table courses enable row level security;
 
+drop policy if exists "owner can manage own courses" on courses;
 create policy "owner can manage own courses" on courses
   for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 
@@ -54,6 +55,7 @@ create table if not exists assignments (
 
 alter table assignments enable row level security;
 
+drop policy if exists "owner can manage own assignments" on assignments;
 create policy "owner can manage own assignments" on assignments
   for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 
@@ -85,6 +87,7 @@ create table if not exists conflicts (
 
 alter table conflicts enable row level security;
 
+drop policy if exists "owner can manage own conflicts" on conflicts;
 create policy "owner can manage own conflicts" on conflicts
   for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 
@@ -102,14 +105,21 @@ create table if not exists integrations (
   url text,
   username text,
   encrypted_credential text, -- AES-GCM ciphertext, base64
-  last_sync timestamptz,
+  last_sync timestamptz, -- last time a sync actually completed successfully
+  last_attempt timestamptz, -- last time a sync was attempted (success or failure) — drives debounce
+  syncing boolean not null default false, -- true while a sync is in flight (background or manual)
   token_expiry timestamptz,
 
   primary key (owner_id, service)
 );
 
+-- safe to re-run against an existing database — adds the new columns if missing
+alter table integrations add column if not exists last_attempt timestamptz;
+alter table integrations add column if not exists syncing boolean not null default false;
+
 alter table integrations enable row level security;
 
+drop policy if exists "owner can manage own integrations" on integrations;
 create policy "owner can manage own integrations" on integrations
   for all using (auth.uid() = owner_id) with check (auth.uid() = owner_id);
 
