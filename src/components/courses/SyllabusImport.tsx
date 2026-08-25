@@ -5,13 +5,15 @@ import type { Course } from "@/types/course";
 
 interface SyllabusImportProps {
   onImported: (course: Course) => void;
+  onAssignmentsImported?: () => void;
 }
 
-export function SyllabusImport({ onImported }: SyllabusImportProps) {
+export function SyllabusImport({ onImported, onAssignmentsImported }: SyllabusImportProps) {
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
 
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
@@ -19,6 +21,7 @@ export function SyllabusImport({ onImported }: SyllabusImportProps) {
 
     setLoading(true);
     setError(null);
+    setSuccess(null);
     try {
       const res = await fetch("/api/syllabus/parse", {
         method: "POST",
@@ -28,6 +31,14 @@ export function SyllabusImport({ onImported }: SyllabusImportProps) {
       const data = await res.json();
       if (!res.ok) throw new Error(data.error || "Failed to parse syllabus");
       onImported(data.course);
+      if (data.assignmentsAdded > 0) {
+        onAssignmentsImported?.();
+        setSuccess(
+          `Added ${data.course.code} with ${data.assignmentsAdded} assignment${data.assignmentsAdded === 1 ? "" : "s"}`
+        );
+      } else {
+        setSuccess(`Added ${data.course.code}`);
+      }
       setText("");
       setOpen(false);
     } catch (e) {
@@ -39,19 +50,23 @@ export function SyllabusImport({ onImported }: SyllabusImportProps) {
 
   if (!open) {
     return (
-      <button
-        onClick={() => setOpen(true)}
-        className="rounded-md border border-border px-3 py-2 text-sm text-text-muted hover:text-text"
-      >
-        + Add from syllabus
-      </button>
+      <div className="flex items-center gap-2">
+        <button
+          onClick={() => setOpen(true)}
+          className="rounded-md border border-border px-3 py-2 text-sm text-text-muted hover:text-text"
+        >
+          + Add from syllabus
+        </button>
+        {success && <p className="text-xs text-green">{success}</p>}
+      </div>
     );
   }
 
   return (
     <form onSubmit={handleSubmit} className="rounded-lg border border-border bg-bg-elevated p-3">
       <p className="mb-2 text-xs text-text-muted">
-        Paste the syllabus text — Gemini will pull out the course code, name, and instructor.
+        Paste the syllabus text — Gemini will pull out the course code, name, instructor, grading
+        criteria, and any dated assignments/exams.
       </p>
       <textarea
         value={text}
@@ -80,3 +95,4 @@ export function SyllabusImport({ onImported }: SyllabusImportProps) {
     </form>
   );
 }
+

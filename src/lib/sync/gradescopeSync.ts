@@ -16,6 +16,37 @@ function titleSimilarity(a: string, b: string): number {
   return matches / longer.length;
 }
 
+function normalizeStr(str: string | null | undefined): string {
+  return (str || "").toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+interface InternalCourseRef {
+  id: string;
+  code: string;
+  name: string;
+}
+
+// Matches an external course (Gradescope/Moodle) to an internally tracked one by
+// code first (external short names often append section numbers), then by name.
+function findInternalCourse(
+  external: { shortName?: string | null; name: string },
+  internalCourses: InternalCourseRef[] | null | undefined
+): InternalCourseRef | null {
+  const codeClean = normalizeStr(external.shortName);
+  for (const internal of internalCourses ?? []) {
+    const intCodeClean = normalizeStr(internal.code);
+    if (codeClean && intCodeClean && (codeClean.includes(intCodeClean) || intCodeClean.includes(codeClean))) {
+      return internal;
+    }
+  }
+  const nameClean = normalizeStr(external.name);
+  for (const internal of internalCourses ?? []) {
+    if (nameClean && nameClean === normalizeStr(internal.name)) return internal;
+  }
+  return null;
+}
+
+
 export interface GradescopeSyncResult {
   ran: boolean;
   synced: number;
@@ -98,11 +129,7 @@ Include all assignments, whether pending, submitted, or graded. Assume year ${ne
         continue;
       }
 
-      const internalCourse = internalCourses?.find(
-        (ic) =>
-          ic.code.toLowerCase().replace(/\s/g, "") === course.name.toLowerCase().replace(/\s/g, "") ||
-          course.name.toLowerCase().includes(ic.name.toLowerCase())
-      );
+      const internalCourse = findInternalCourse({ shortName: course.name, name: course.name }, internalCourses);
 
       for (const item of parsed) {
         if (!item.due_date) continue;
@@ -111,11 +138,16 @@ Include all assignments, whether pending, submitted, or graded. Assume year ${ne
 
         const existingByGsId = existingAssignments?.find((a) => a.gradescope_id === String(item.id));
         if (existingByGsId) {
+          const patch: Record<string, unknown> = {};
           if (new Date(existingByGsId.deadline).getTime() !== deadline.getTime()) {
-            await supabase
-              .from("assignments")
-              .update({ deadline: deadline.toISOString() })
-              .eq("id", existingByGsId.id);
+            patch.deadline = deadline.toISOString();
+          }
+          // A course added after this assignment was first synced — link it up now.
+          if (!existingByGsId.course_id && internalCourse) {
+            patch.course_id = internalCourse.id;
+          }
+          if (Object.keys(patch).length > 0) {
+            await supabase.from("assignments").update(patch).eq("id", existingByGsId.id);
           }
           continue;
         }

@@ -31,7 +31,7 @@ export default function CoursesPage() {
 
       <div className="my-4 flex flex-col gap-3">
         <CourseForm onSubmit={addCourse} />
-        <SyllabusImport onImported={pushCourse} />
+        <SyllabusImport onImported={pushCourse} onAssignmentsImported={loadAssignments} />
       </div>
 
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
