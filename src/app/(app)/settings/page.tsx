@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useGradescopeStore } from "@/store/gradescopeStore";
 import { useMoodleStore } from "@/store/moodleStore";
+import { useSyncNow } from "@/lib/hooks/useSyncNow";
 
 export default function SettingsPage() {
   return (
@@ -21,14 +22,11 @@ function GradescopeSection() {
     useGradescopeStore();
   const [formEmail, setFormEmail] = useState("");
   const [password, setPassword] = useState("");
+  const { isSyncing, message: syncMessage, triggerSync } = useSyncNow(lastSync, checkStatus);
 
   useEffect(() => {
     checkStatus();
   }, [checkStatus]);
-
-  async function handleSync() {
-    await fetch("/api/sync/trigger", { method: "POST", body: JSON.stringify({ force: true }) });
-  }
 
   return (
     <section>
@@ -47,14 +45,17 @@ function GradescopeSection() {
         <div className="rounded-lg border border-border bg-bg-elevated p-3 text-sm">
           <p className="text-text">{email}</p>
           <p className="text-xs text-text-faint">
-            Last synced: {lastSync ? new Date(lastSync).toLocaleString() : "never"}
+            {isSyncing || syncMessage
+              ? syncMessage
+              : `Last synced: ${lastSync ? new Date(lastSync).toLocaleString() : "never"}`}
           </p>
           <div className="mt-2 flex gap-2">
             <button
-              onClick={handleSync}
-              className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white"
+              onClick={triggerSync}
+              disabled={isSyncing}
+              className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
             >
-              Sync now
+              {isSyncing ? "Syncing…" : "Sync now"}
             </button>
             <button
               onClick={disconnect}
@@ -105,14 +106,11 @@ function MoodleSection() {
   const [formUrl, setFormUrl] = useState("");
   const [formUsername, setFormUsername] = useState("");
   const [formToken, setFormToken] = useState("");
+  const { isSyncing, message: syncMessage, triggerSync } = useSyncNow(lastSync, checkStatus);
 
   useEffect(() => {
     checkStatus();
   }, [checkStatus]);
-
-  async function handleSync() {
-    await fetch("/api/sync/trigger", { method: "POST", body: JSON.stringify({ force: true }) });
-  }
 
   return (
     <section>
@@ -133,14 +131,17 @@ function MoodleSection() {
             {username}@{url}
           </p>
           <p className="text-xs text-text-faint">
-            Last synced: {lastSync ? new Date(lastSync).toLocaleString() : "never"}
+            {isSyncing || syncMessage
+              ? syncMessage
+              : `Last synced: ${lastSync ? new Date(lastSync).toLocaleString() : "never"}`}
           </p>
           <div className="mt-2 flex gap-2">
             <button
-              onClick={handleSync}
-              className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white"
+              onClick={triggerSync}
+              disabled={isSyncing}
+              className="rounded-md bg-accent px-3 py-1.5 text-xs font-medium text-white disabled:opacity-60"
             >
-              Sync now
+              {isSyncing ? "Syncing…" : "Sync now"}
             </button>
             <button
               onClick={disconnect}

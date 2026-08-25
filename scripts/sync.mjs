@@ -31,14 +31,20 @@ const supabase = createSupabaseClient(NEXT_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE
 });
 
 function decrypt(encrypted, base64Key) {
-  const key = Buffer.from(base64Key, "base64");
+  const key = Buffer.from(base64Key.trim(), "base64");
   const [ivB64, tagB64, dataB64] = encrypted.split(":");
   const iv = Buffer.from(ivB64, "base64");
   const authTag = Buffer.from(tagB64, "base64");
   const ciphertext = Buffer.from(dataB64, "base64");
   const decipher = createDecipheriv("aes-256-gcm", key, iv);
   decipher.setAuthTag(authTag);
-  return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+  try {
+    return Buffer.concat([decipher.update(ciphertext), decipher.final()]).toString("utf8");
+  } catch {
+    throw new Error(
+      "Decryption failed — check that the encryption key GitHub secret exactly matches the one set in Vercel"
+    );
+  }
 }
 
 function titleSimilarity(a, b) {
