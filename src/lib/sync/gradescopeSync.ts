@@ -113,10 +113,11 @@ export async function syncGradescopeNow(
         .slice(0, 100_000);
 
       const prompt = `Extract assignments from this Gradescope course page HTML.
-Return ONLY a JSON object: {"assignments": [{"id": "string", "title": "string", "due_date": "ISO 8601 string or null"}]}
-Include all assignments, whether pending, submitted, or graded. Assume year ${new Date().getFullYear()} if missing from the date.`;
+Return ONLY a JSON object: {"assignments": [{"id": "string", "title": "string", "due_date": "ISO 8601 string or null", "submitted": true or false}]}
+Include all assignments, whether pending, submitted, or graded. Assume year ${new Date().getFullYear()} if missing from the date.
+Set "submitted" to true if the assignment's status column shows it has already been turned in or graded (e.g. a score like "8/10", "Submitted", "Graded"). Set it to false if it shows "No Submission" or is otherwise not turned in.`;
 
-      let parsed: { id: string; title: string; due_date: string | null }[] = [];
+      let parsed: { id: string; title: string; due_date: string | null; submitted?: boolean }[] = [];
       try {
         const response = await ai.models.generateContent({
           model: "gemini-3.7-flash",
@@ -139,8 +140,16 @@ Include all assignments, whether pending, submitted, or graded. Assume year ${ne
         const existingByGsId = existingAssignments?.find((a) => a.gradescope_id === String(item.id));
         if (existingByGsId) {
           const patch: Record<string, unknown> = {};
+          if (existingByGsId.title !== item.title) {
+            patch.title = item.title;
+          }
           if (new Date(existingByGsId.deadline).getTime() !== deadline.getTime()) {
             patch.deadline = deadline.toISOString();
+          }
+          // Never un-complete something the user already marked done manually.
+          if (item.submitted && existingByGsId.status !== "completed") {
+            patch.status = "completed";
+            patch.completed_at = new Date().toISOString();
           }
           // A course added after this assignment was first synced — link it up now.
           if (!existingByGsId.course_id && internalCourse) {
@@ -181,7 +190,8 @@ Include all assignments, whether pending, submitted, or graded. Assume year ${ne
           title: item.title,
           course_id: internalCourse?.id ?? null,
           deadline: deadline.toISOString(),
-          status: "not_started",
+          status: item.submitted ? "completed" : "not_started",
+          completed_at: item.submitted ? new Date().toISOString() : null,
           category: "assignment",
           source: "gradescope",
           gradescope_id: String(item.id),

@@ -231,8 +231,9 @@ async function syncGradescope() {
         .slice(0, 100_000);
 
       const prompt = `Extract assignments from this Gradescope course page HTML.
-Return ONLY a JSON object: {"assignments": [{"id": "string", "title": "string", "due_date": "ISO 8601 string or null"}]}
-Include all assignments, whether pending, submitted, or graded. Assume year ${new Date().getFullYear()} if missing from the date.`;
+Return ONLY a JSON object: {"assignments": [{"id": "string", "title": "string", "due_date": "ISO 8601 string or null", "submitted": true or false}]}
+Include all assignments, whether pending, submitted, or graded. Assume year ${new Date().getFullYear()} if missing from the date.
+Set "submitted" to true if the assignment's status column shows it has already been turned in or graded (e.g. a score like "8/10", "Submitted", "Graded"). Set it to false if it shows "No Submission" or is otherwise not turned in.`;
 
       let parsed = [];
       try {
@@ -260,8 +261,16 @@ Include all assignments, whether pending, submitted, or graded. Assume year ${ne
         );
         if (existingByGsId) {
           const patch = {};
+          if (existingByGsId.title !== item.title) {
+            patch.title = item.title;
+          }
           if (new Date(existingByGsId.deadline).getTime() !== deadline.getTime()) {
             patch.deadline = deadline.toISOString();
+          }
+          // Never un-complete something the user already marked done manually.
+          if (item.submitted && existingByGsId.status !== "completed") {
+            patch.status = "completed";
+            patch.completed_at = new Date().toISOString();
           }
           // A course added after this assignment was first synced — link it up now.
           if (!existingByGsId.course_id && internalCourse) {
@@ -303,7 +312,8 @@ Include all assignments, whether pending, submitted, or graded. Assume year ${ne
           title: item.title,
           course_id: internalCourse?.id ?? null,
           deadline: deadline.toISOString(),
-          status: "not_started",
+          status: item.submitted ? "completed" : "not_started",
+          completed_at: item.submitted ? new Date().toISOString() : null,
           category: "assignment",
           source: "gradescope",
           gradescope_id: String(item.id),
@@ -385,29 +395,6 @@ async function syncMoodle() {
     courseIds.forEach((id, i) => (assignParams[`courseids[${i}]`] = String(id)));
     const assignData = await moodleRest(url, token, "mod_assign_get_assignments", assignParams);
 
-    // Figure out which assignments this user has already submitted, so we can
-    // auto-complete them even if the user forgot to check them off in Cortex.
-    const allAssignmentIds = (assignData.courses ?? []).flatMap((c) =>
-      (c.assignments ?? []).map((a) => a.id)
-    );
-    const submittedIds = new Set();
-    if (allAssignmentIds.length > 0) {
-      const submissionParams = {};
-      allAssignmentIds.forEach((id, i) => (submissionParams[`assignmentids[${i}]`] = String(id)));
-      try {
-        const submissionData = await moodleRest(url, token, "mod_assign_get_submissions", submissionParams);
-        for (const a of submissionData.assignments ?? []) {
-          for (const s of a.submissions ?? []) {
-            if (s.userid === siteInfo.userid && s.status === "submitted") {
-              submittedIds.add(a.assignmentid);
-            }
-          }
-        }
-      } catch (e) {
-        console.warn("[moodle] could not fetch submission statuses:", e.message);
-      }
-    }
-
     const { data: internalCourses } = await supabase
       .from("courses")
       .select("id, code, name")
@@ -463,13 +450,33 @@ async function syncMoodle() {
       for (const assignment of course.assignments ?? []) {
         if (!assignment.duedate) continue;
         const deadline = new Date(assignment.duedate * 1000);
-        const submitted = submittedIds.has(assignment.id);
+
+        // Ask Moodle for this user's own submission status (works for students,
+        // unlike mod_assign_get_submissions which needs a teacher's viewgrades capability).
+        let submitted = false;
+        try {
+          const submissionStatus = await moodleRest(url, token, "mod_assign_get_submission_status", {
+            assignid: String(assignment.id),
+            userid: String(siteInfo.userid),
+          });
+          if (
+            submissionStatus?.lastattempt?.submission?.status === "submitted" ||
+            submissionStatus?.lastattempt?.graded === true
+          ) {
+            submitted = true;
+          }
+        } catch (e) {
+          console.warn(`[moodle] could not fetch submission status for assignment ${assignment.id}:`, e.message);
+        }
 
         const existing = existingAssignments?.find(
           (a) => a.moodle_id === String(assignment.id)
         );
         if (existing) {
           const patch = {};
+          if (existing.title !== assignment.name) {
+            patch.title = assignment.name;
+          }
           if (new Date(existing.deadline).getTime() !== deadline.getTime()) {
             patch.deadline = deadline.toISOString();
           }

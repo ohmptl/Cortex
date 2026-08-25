@@ -187,29 +187,6 @@ export async function syncMoodleNow(
       courses: { id: number; assignments: { id: number; name: string; duedate: number }[] }[];
     }>(url, token, "mod_assign_get_assignments", assignParams);
 
-    // Figure out which assignments this user has already submitted, so we can
-    // auto-complete them even if the user forgot to check them off in Cortex.
-    const allAssignmentIds = assignData.courses.flatMap((c) => c.assignments.map((a) => a.id));
-    const submittedIds = new Set<number>();
-    if (allAssignmentIds.length > 0) {
-      const submissionParams: Record<string, string> = {};
-      allAssignmentIds.forEach((id, i) => (submissionParams[`assignmentids[${i}]`] = String(id)));
-      try {
-        const submissionData = await moodleRest<{
-          assignments: { assignmentid: number; submissions: { userid: number; status: string }[] }[];
-        }>(url, token, "mod_assign_get_submissions", submissionParams);
-        for (const a of submissionData.assignments ?? []) {
-          for (const s of a.submissions ?? []) {
-            if (s.userid === siteInfo.userid && s.status === "submitted") {
-              submittedIds.add(a.assignmentid);
-            }
-          }
-        }
-      } catch {
-        // Non-fatal — just means we won't auto-complete submitted assignments this run.
-      }
-    }
-
     const { data: internalCourses } = await supabase
       .from("courses")
       .select("id, code, name")
@@ -277,11 +254,33 @@ export async function syncMoodleNow(
       for (const assignment of course.assignments ?? []) {
         if (!assignment.duedate) continue;
         const deadline = new Date(assignment.duedate * 1000);
-        const submitted = submittedIds.has(assignment.id);
+
+        // Ask Moodle for this user's own submission status (works for students,
+        // unlike mod_assign_get_submissions which needs a teacher's viewgrades capability).
+        let submitted = false;
+        try {
+          const submissionStatus = await moodleRest<{
+            lastattempt?: { submission?: { status?: string }; graded?: boolean };
+          }>(url, token, "mod_assign_get_submission_status", {
+            assignid: String(assignment.id),
+            userid: String(siteInfo.userid),
+          });
+          if (
+            submissionStatus?.lastattempt?.submission?.status === "submitted" ||
+            submissionStatus?.lastattempt?.graded === true
+          ) {
+            submitted = true;
+          }
+        } catch {
+          // Non-fatal — just means we won't auto-complete this assignment this run.
+        }
 
         const existing = existingAssignments?.find((a) => a.moodle_id === String(assignment.id));
         if (existing) {
           const patch: Record<string, unknown> = {};
+          if (existing.title !== assignment.name) {
+            patch.title = assignment.name;
+          }
           if (new Date(existing.deadline).getTime() !== deadline.getTime()) {
             patch.deadline = deadline.toISOString();
           }
