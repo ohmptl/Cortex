@@ -1,14 +1,16 @@
 """
 Google Gemini API client for text summarization.
-Uses the google-generativeai SDK to generate lecture summaries.
+Uses the google-genai SDK (unified Gen AI SDK) to generate lecture summaries.
 """
 
-import os
 import logging
 from typing import Optional
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
 logger = logging.getLogger(__name__)
+
+MODEL_NAME = "gemini-3.7-flash"
 
 
 class GeminiClient:
@@ -22,13 +24,11 @@ class GeminiClient:
             api_key: Google AI API key
         """
         self.api_key = api_key
-        genai.configure(api_key=api_key)
-        
-        # Configure the model
-        self.model = genai.GenerativeModel('gemini-2.0-flash')
-        
-        # Set generation config for better summaries
-        self.generation_config = genai.types.GenerationConfig(
+        self.client = genai.Client(api_key=api_key)
+        self.model_name = MODEL_NAME
+
+        # Generation config for better summaries
+        self.generation_config = types.GenerateContentConfig(
             temperature=0.3,
             top_p=0.8,
             top_k=40,
@@ -65,9 +65,10 @@ class GeminiClient:
             """
             
             # Generate response
-            response = self.model.generate_content(
-                prompt,
-                generation_config=self.generation_config
+            response = self.client.models.generate_content(
+                model=self.model_name,
+                contents=prompt,
+                config=self.generation_config,
             )
             
             if response.text:
@@ -90,7 +91,7 @@ class GeminiClient:
         """
         try:
             return {
-                'model_name': self.model.model_name,
+                'model_name': self.model_name,
                 'generation_config': {
                     'temperature': self.generation_config.temperature,
                     'top_p': self.generation_config.top_p,
