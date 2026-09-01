@@ -1,5 +1,8 @@
 -- Run after deploying both functions. Replace the example values first.
 -- Vault keeps the service-role credential out of cron definitions and logs.
+create extension if not exists pg_cron with schema extensions;
+create extension if not exists pg_net with schema extensions;
+
 select vault.create_secret('https://PROJECT_REF.supabase.co', 'cortex_project_url');
 select vault.create_secret('SERVICE_ROLE_KEY', 'cortex_service_role_key');
 
@@ -13,7 +16,8 @@ select cron.schedule(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'cortex_service_role_key')
     ),
-    body := '{}'::jsonb
+    body := '{}'::jsonb,
+    timeout_milliseconds := 15000
   );
   $$
 );
@@ -28,7 +32,8 @@ select cron.schedule(
       'Content-Type', 'application/json',
       'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'cortex_service_role_key')
     ),
-    body := '{}'::jsonb
+    body := '{}'::jsonb,
+    timeout_milliseconds := 120000
   );
   $$
 );
