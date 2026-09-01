@@ -1,0 +1,34 @@
+-- Run after deploying both functions. Replace the example values first.
+-- Vault keeps the service-role credential out of cron definitions and logs.
+select vault.create_secret('https://PROJECT_REF.supabase.co', 'cortex_project_url');
+select vault.create_secret('SERVICE_ROLE_KEY', 'cortex_service_role_key');
+
+select cron.schedule(
+  'cortex-moodle-dispatch',
+  '*/15 * * * *',
+  $$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'cortex_project_url') || '/functions/v1/moodle-sync-dispatch',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'cortex_service_role_key')
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);
+
+select cron.schedule(
+  'cortex-moodle-worker',
+  '* * * * *',
+  $$
+  select net.http_post(
+    url := (select decrypted_secret from vault.decrypted_secrets where name = 'cortex_project_url') || '/functions/v1/moodle-sync-worker',
+    headers := jsonb_build_object(
+      'Content-Type', 'application/json',
+      'Authorization', 'Bearer ' || (select decrypted_secret from vault.decrypted_secrets where name = 'cortex_service_role_key')
+    ),
+    body := '{}'::jsonb
+  );
+  $$
+);

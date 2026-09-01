@@ -1,0 +1,45 @@
+{
+  "courses": [
+    { "id": 101, "shortname": "CSC-510", "fullname": "Software Engineering", "visible": 1 },
+    { "id": 202, "shortname": "CSC-591", "fullname": "Human-Centered Computing", "visible": 1 }
+  ],
+  "courseContents": [
+    {
+      "courseId": "101",
+      "sections": [
+        {
+          "id": 1001,
+          "section": 1,
+          "name": "Foundations",
+          "modules": [
+            { "id": 501, "instance": 9001, "modname": "assign", "name": "Architecture memo", "url": "https://moodle.example.edu/mod/assign/view.php?id=501" },
+            { "id": 502, "instance": 9002, "modname": "quiz", "name": "Testing quiz", "url": "https://moodle.example.edu/mod/quiz/view.php?id=502" }
+          ]
+        }
+      ]
+    }
+  ],
+  "events": [
+    { "id": 7001, "courseid": 101, "cmid": 501, "instance": 9001, "modulename": "assign", "name": "Architecture memo is due", "timesort": 1789185600, "url": "https://moodle.example.edu/calendar/view.php?view=day" },
+    { "id": 7002, "courseid": 101, "cmid": 502, "instance": 9002, "modulename": "quiz", "name": "Testing quiz closes", "timesort": 1789272000 },
+    { "id": 7003, "courseid": 202, "name": "Studio critique", "timesort": 1789358400 }
+  ],
+  "assignments": [
+    { "id": 9001, "course": 101, "name": "Architecture memo", "intro": "Submit a concise architecture memo.", "duedate": 1789185600, "allowsubmissionsfromdate": 1788580800 }
+  ],
+  "quizzes": [
+    { "id": 9002, "course": 101, "name": "Testing quiz", "intro": "Quiz on testing strategy.", "timeopen": 1788667200, "timeclose": 1789272000 }
+  ],
+  "gradeItems": [
+    {
+      "courseId": "101",
+      "items": [
+        { "id": 3001, "itemtype": "category", "itemname": "Projects", "sortorder": 1, "grademax": 100 },
+        { "id": 3002, "itemtype": "mod", "itemmodule": "assign", "iteminstance": 9001, "categoryid": 3001, "itemname": "Architecture memo", "graderaw": 88, "grademax": 100, "percentageformatted": "88.0%", "sortorder": 2 }
+      ]
+    }
+  ],
+  "completeScopes": ["courses", "contents", "events", "grades"],
+  "unsupportedCapabilities": ["mod_forum_get_forum_discussions"],
+  "failures": []
+}

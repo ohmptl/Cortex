@@ -1,65 +1,24 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
-import { syncGradescopeNow } from "@/lib/sync/gradescopeSync";
-import { syncMoodleNow } from "@/lib/sync/moodleSync";
+import { requireAcademicRepository } from "@/domain/auth";
 
-// Runs the sync inline within the request instead of dispatching a GitHub
-// Actions workflow, so a manual "Sync now" click gets an immediate result
-// (GitHub Actions runner provisioning alone can take 10-60s+ before the job
-// even starts). This always overrides any in-progress background sync.
 export const maxDuration = 60;
 
 export async function POST() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
-  }
-
-  const gradescopeKey = process.env.GRADESCOPE_ENCRYPTION_KEY;
-  const moodleKey = process.env.MOODLE_ENCRYPTION_KEY;
-  if (!gradescopeKey || !moodleKey) {
-    return NextResponse.json(
-      { error: "Server missing GRADESCOPE_ENCRYPTION_KEY/MOODLE_ENCRYPTION_KEY" },
-      { status: 500 }
-    );
-  }
-
-  await supabase
-    .from("integrations")
-    .update({ syncing: true, last_attempt: new Date().toISOString() })
-    .eq("owner_id", user.id);
-
   try {
-    const [gradescope, moodle] = await Promise.all([
-      syncGradescopeNow(supabase, user.id, gradescopeKey, process.env.GEMINI_API_KEY),
-      syncMoodleNow(supabase, user.id, moodleKey),
-    ]);
-
-    const now = new Date().toISOString();
-    if (gradescope.ran && !gradescope.error) {
-      await supabase
-        .from("integrations")
-        .update({ last_sync: now })
-        .eq("owner_id", user.id)
-        .eq("service", "gradescope");
+    const { repository } = await requireAcademicRepository();
+    const runId = await repository.triggerMoodleSync("manual");
+    const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+    const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL;
+    let workerStarted = false;
+    if (serviceKey && supabaseUrl) {
+      const response = await fetch(`${supabaseUrl}/functions/v1/moodle-sync-worker`, {
+        method: "POST", headers: { authorization: `Bearer ${serviceKey}`, "content-type": "application/json" },
+        body: JSON.stringify({ runId }), signal: AbortSignal.timeout(55_000), cache: "no-store",
+      });
+      workerStarted = response.ok;
     }
-    if (moodle.ran && !moodle.error) {
-      await supabase
-        .from("integrations")
-        .update({ last_sync: now })
-        .eq("owner_id", user.id)
-        .eq("service", "moodle");
-    }
-
-    return NextResponse.json({ gradescope, moodle });
-  } finally {
-    await supabase
-      .from("integrations")
-      .update({ syncing: false })
-      .eq("owner_id", user.id);
+    return NextResponse.json({ runId, workerStarted });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to queue Moodle synchronization" }, { status: 400 });
   }
 }

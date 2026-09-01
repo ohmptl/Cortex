@@ -1,52 +1,25 @@
-"use client";
+import Link from "next/link";
+import { requireAcademicRepository } from "@/domain/auth";
 
-import { useEffect, useState } from "react";
-import { useCourseStore } from "@/store/courseStore";
-import { useAssignmentStore } from "@/store/assignmentStore";
-import { CourseForm } from "@/components/courses/CourseForm";
-import { CourseCard } from "@/components/courses/CourseCard";
-import { SyllabusImport } from "@/components/courses/SyllabusImport";
-import { CourseEditModal } from "@/components/courses/CourseEditModal";
-import type { Course } from "@/types/course";
+export const dynamic = "force-dynamic";
 
-export default function CoursesPage() {
-  const { courses, loadCourses, addCourse, removeCourse, pushCourse } = useCourseStore();
-  const { assignments, loadAssignments } = useAssignmentStore();
-  const [editingCourse, setEditingCourse] = useState<Course | null>(null);
-
-  useEffect(() => {
-    loadCourses();
-    loadAssignments();
-  }, [loadCourses, loadAssignments]);
-
-  // Keep the modal's course in sync with store updates (e.g. after saving a grade)
-  const liveEditingCourse = editingCourse
-    ? courses.find((c) => c.id === editingCourse.id) ?? null
-    : null;
-
+export default async function CoursesPage() {
+  const { repository } = await requireAcademicRepository();
+  const courses = await repository.listCourses();
   return (
-    <div className="p-6">
-      <h1 className="text-xl font-semibold text-text">Courses</h1>
-      <p className="mt-1 text-sm text-text-muted">{courses.length} courses</p>
-
-      <div className="my-4 flex flex-col gap-3">
-        <CourseForm onSubmit={addCourse} />
-        <SyllabusImport onImported={pushCourse} onAssignmentsImported={loadAssignments} />
-      </div>
-
-      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {courses.map((course) => (
-          <CourseCard
-            key={course.id}
-            course={course}
-            assignments={assignments.filter((a) => a.courseId === course.id)}
-            onDelete={removeCourse}
-            onEdit={setEditingCourse}
-          />
-        ))}
-      </div>
-
-      <CourseEditModal course={liveEditingCourse} onClose={() => setEditingCourse(null)} />
-    </div>
+    <>
+      <header className="page-header">
+        <div><p className="eyebrow">Academic structure</p><h1>Courses</h1></div>
+        <p className="dek">Moodle creates and maintains this index through stable course identities. No manual matching is required.</p>
+      </header>
+      {courses.length ? <div className="course-index">{courses.map((course, index) => (
+        <Link href={`/courses/${course.id}`} className="course-entry" key={course.id}>
+          <span className="eyebrow">{(index + 1).toString().padStart(2, "0")} / {course.code}</span>
+          <h2>{course.name}</h2>
+          <p>{course.instructor ?? "Instructor not provided by Moodle"}</p>
+          <footer><span>{course.term ?? "Term unavailable"}</span><span>{course.active ? "Active" : "Archived"} →</span></footer>
+        </Link>
+      ))}</div> : <p className="empty-state">Connect Moodle and run synchronization to populate courses.</p>}
+    </>
   );
 }

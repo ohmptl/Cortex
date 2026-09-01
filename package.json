@@ -9,21 +9,18 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "typecheck": "tsc --noEmit --incremental false",
+    "test": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.ts"
   },
   "dependencies": {
-    "@google/genai": "^2.18.0",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
-    "clsx": "^2.1.1",
-    "date-fns": "^4.4.0",
     "next": "16.3.2",
     "react": "19.2.8",
     "react-dom": "19.2.8",
-    "react-hook-form": "^7.86.0",
-    "recharts": "^3.10.1",
-    "zod": "^4.4.3",
-    "zustand": "^5.0.15"
+    "zod": "^4.4.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4",

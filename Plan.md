@@ -1,6 +1,7 @@
 # Cortex — Merge Plan (Overdue → Cortex)
 
-Status: **Planning complete, awaiting go-ahead to scaffold.**
+Status: **Implemented and in parity-hardening.** The root web app is live in the repository; current
+work is restoring retained Overdue behavior and strengthening sync correctness.
 
 ## 1. Vision
 
@@ -106,3 +107,14 @@ no direct client DB access) — to be decided during implementation.
 ## 8. Explicitly out of scope for this merge
 Chrome extension, AI Solver, Nextcloud, Google Calendar sync, IndexedDB, NLP quick-add, AI study
 tips, multi-user auth, Hermes integration, Panopto webapp integration.
+
+## 9. Parity-hardening notes
+
+- Retained Overdue UI patterns should be ported directly where they remain useful rather than
+  replaced with reduced approximations.
+- Manual course grades are user-owned. Integration syncs must never overwrite them.
+- Synced grades use stable external IDs, and deleting one creates a local ignore marker so it does
+  not return on the next sync.
+- Moodle grade items that cannot map to the configured grading weights are intentionally skipped.
+- The UI includes conflict resolution, assignment tags, office hours, day/week/month calendars,
+  trends, and streaks.

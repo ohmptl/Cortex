@@ -1,36 +1,16 @@
 import { NextResponse } from "next/server";
-import { createClient } from "@/lib/supabase/server";
+import { requireAcademicRepository } from "@/domain/auth";
 
 export async function GET() {
-  const supabase = await createClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
-
-  if (!user) {
-    return NextResponse.json({ error: "Not authenticated" }, { status: 401 });
+  try {
+    const { repository } = await requireAcademicRepository();
+    const connection = await repository.getMoodleStatus();
+    if (!connection) return NextResponse.json({ connected: false });
+    const [capabilities, runs] = await Promise.all([
+      repository.listCapabilities(connection.id), repository.listSyncRuns(10),
+    ]);
+    return NextResponse.json({ connected: connection.connected, connection, capabilities, runs });
+  } catch (error) {
+    return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to read Moodle status" }, { status: 401 });
   }
-
-  const { data, error } = await supabase
-    .from("integrations")
-    .select("url, username, last_sync, syncing")
-    .eq("owner_id", user.id)
-    .eq("service", "moodle")
-    .maybeSingle();
-
-  if (error) {
-    return NextResponse.json({ error: error.message }, { status: 500 });
-  }
-
-  if (!data) {
-    return NextResponse.json({ connected: false });
-  }
-
-  return NextResponse.json({
-    connected: true,
-    url: data.url,
-    username: data.username,
-    lastSync: data.last_sync,
-    syncing: data.syncing,
-  });
 }

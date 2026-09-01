@@ -1,69 +1,50 @@
 # Cortex
 
-Tell me why schools need to have 5 different places to assign work, and professors who cannot use LMS systems to their fullest potential, why can it be more organized? We cannot change the schools or the professors, but we can leverage our brains to develop tools that let us do just that.
+Cortex is a private, single-user academic data platform. Moodle data is retained as sanitized raw source records and projected into a provider-neutral relational model used by both the editorial web interface and remote MCP server.
 
-Meet Cortex, an AI-powered workflow and agent designed to act as a **second brain for students**.  
-Its purpose is to automate the learning workflow by understanding lecture material, tracking assignments, and integrating seamlessly into productivity tools students already use.  
+```text
+Moodle → raw records + versions → normalized academic domain → UI + MCP
+```
 
----
+## What V2 includes
 
-## 🚀 Vision
-Cortex aims to give students a personal AI partner that:
-- **Listens to lectures** → Automatically transcribes and summarizes recorded lectures.  
-- **Tracks deadlines** → Detects assignments and tests, integrating them into a Notion database.  
-- **Keeps you on track** → Connects with a Discord bot to send smart reminders, including:
-  - When a new lecture summary is ready.
-  - When an upcoming deadline is at risk of being missed.  
+- Automatic Moodle course creation using stable Moodle course IDs
+- Capability discovery from the connected token's real web-service allowlist
+- Course sections/modules and action-event-first workload discovery
+- Activity-specific typing and optional assignment, quiz, completion, submission, and grade enrichment
+- Raw record provenance, content hashes, version history, missing-upstream state, and observable sync runs
+- Relational grade categories/items with authoritative course/category association
+- User-owned overrides, notes, tags, completion state, and review items
+- Editorial Today, Calendar, Course, gradebook, diagnostics, and raw-source views
+- OAuth-protected remote MCP read and safe-write tools
 
-Future goals include turning Cortex into a **fully functional AI Agent** that:
-- Learns your habits and academic patterns.
-- Analyzes grades and performance to identify areas of improvement.
-- Suggests personalized study strategies to help you succeed.
+Inherited provider scraping, fuzzy duplicate resolution, syllabus parsing, gamification/statistics, page-load synchronization, and the duplicated workflow have been removed. `panopto_summarizer/` remains unchanged for the later lecture phase.
 
----
+## Stack
 
-## ✨ Features (Work in Progress)
-- 📚 **Lecture Intelligence**: Reads and summarizes lecture recordings automatically.  
-- 📝 **Deadline Management**: Scrapes assignment/test deadlines and syncs them with Notion.  
-- 🤖 **Discord Integration**: Notifies you when new summaries or deadlines are detected.  
+- Next.js 16.3.2 / React 19 / TypeScript
+- Supabase Auth, Postgres, RLS, Cron, Vault, and Edge Functions
+- Official Model Context Protocol TypeScript SDK
+- Node.js 22+
 
----
+## Local development
 
-## 🔮 Roadmap
-- [X] Automatic transcript retrieval from lecture platforms (e.g., Panopto, Moodle).  
-- [ ] Notion API integration for real-time task and deadline updates.  
-- [ ] Discord bot for personalized notifications and reminders.  
-- [ ] AI-driven academic insights (study recommendations, grade improvement strategies).  
-- [ ] Adaptive learning agent that understands your habits over time.  
+1. Copy `.env.example` to `.env.local` and fill in the local Supabase values.
+2. Install packages with `npm install`.
+3. Apply the destructive V2 migrations with `supabase db reset` for local development, or `supabase migration up` against the intended disposable database.
+4. Deploy `moodle-sync-dispatch` and `moodle-sync-worker` and configure their secrets.
+5. Create the single Supabase Auth user, then run `npm run dev`.
+6. Open `/settings/integrations/moodle`, connect the Moodle token, and run the first sync.
 
----
+The Moodle token and service-role key remain server-side. Tokens are submitted in POST bodies, encrypted with a 32-byte AES-GCM key, and stripped from raw payloads and diagnostics.
 
-## 🛠️ Tech Stack (Planned)
-- **Backend**: Python (Flask/FastAPI)  
-- **AI/ML**: LLMs for summarization + classification  
-- **Database**: Notion API
-- **Integrations**:  
-  - Notion (assignments, deadlines, tasks)  
-  - Discord Bot (notifications & summaries)  
-- **Future Expansion**: Real-time agent learning and personalization  
+## Checks
 
----
+```bash
+npm run lint
+npm run typecheck
+npm test
+npm run build
+```
 
-## 📌 Status
-Cortex is in **active development**.  
-This repo is the starting point for building an AI agent that bridges the gap between lecture content, productivity tools, and real-time academic support.  
-
----
-
-## 🤝 Contributing
-Contributions, suggestions, and ideas are welcome! Please open an issue or submit a pull request if you'd like to collaborate.  
-
----
-
-## 📄 License
-MIT License – free to use and modify.  
-
----
-
-## 💡 Inspiration
-Cortex is built on the belief that **optimizing work is critical**. By automating the tedious parts of academic life, Cortex frees up time for meaningful learning and growth.  
+See [architecture](docs/architecture.md), [MCP deployment and client connection](docs/mcp.md), and the [Vault-backed cron template](supabase/cron.sql.example).
