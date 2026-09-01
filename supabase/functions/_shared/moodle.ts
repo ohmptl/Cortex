@@ -5,6 +5,21 @@ export type SyncCounts = { inserted: number; updated: number; unchanged: number;
 
 export const emptyCounts = (): SyncCounts => ({ inserted: 0, updated: 0, unchanged: 0, missing: 0, skipped: 0, failed: 0 });
 
+export function hasServiceRole(request: Request): boolean {
+  const authorization = request.headers.get("authorization");
+  if (!authorization?.startsWith("Bearer ")) return false;
+  const payloadPart = authorization.slice(7).split(".")[1];
+  if (!payloadPart) return false;
+  try {
+    const normalized = payloadPart.replace(/-/g, "+").replace(/_/g, "/");
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, "=");
+    const payload = JSON.parse(atob(padded)) as { role?: unknown };
+    return payload.role === "service_role";
+  } catch {
+    return false;
+  }
+}
+
 export function adminClient() {
   return createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, {
     auth: { persistSession: false, autoRefreshToken: false },

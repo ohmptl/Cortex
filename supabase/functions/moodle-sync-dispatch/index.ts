@@ -1,8 +1,7 @@
-import { adminClient } from "../_shared/moodle.ts";
+import { adminClient, hasServiceRole } from "../_shared/moodle.ts";
 
 Deno.serve(async (request) => {
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  if (request.headers.get("authorization") !== `Bearer ${serviceKey}`) return new Response("Unauthorized", { status: 401 });
+  if (!hasServiceRole(request)) return new Response("Unauthorized", { status: 401 });
   const client = adminClient();
   const { data: connections, error } = await client.from("provider_connections").select("id,owner_id")
     .eq("provider", "moodle").eq("status", "active");

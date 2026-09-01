@@ -1,4 +1,4 @@
-import { adminClient, decryptCredential, emptyCounts, iso, moodleCall, sourceTarget, text, upsertRaw, type JsonObject, type SyncCounts } from "../_shared/moodle.ts";
+import { adminClient, decryptCredential, emptyCounts, hasServiceRole, iso, moodleCall, sourceTarget, text, upsertRaw, type JsonObject, type SyncCounts } from "../_shared/moodle.ts";
 
 const desiredGroups: Record<string, string[]> = {
   site: ["core_webservice_get_site_info"], courses: ["core_enrol_get_users_courses"],
@@ -303,8 +303,7 @@ async function grades(context: Context, counts: SyncCounts) {
 }
 
 Deno.serve(async (request) => {
-  const serviceKey = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!;
-  if (request.headers.get("authorization") !== `Bearer ${serviceKey}`) return new Response("Unauthorized", { status: 401 });
+  if (!hasServiceRole(request)) return new Response("Unauthorized", { status: 401 });
   const client = adminClient();
   const workerToken = crypto.randomUUID();
   const { data: tasks, error: claimError } = await client.rpc("claim_sync_tasks", { worker_token: workerToken, task_limit: 1 });
