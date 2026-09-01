@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { ACADEMIC_ITEM_TYPES } from "./types.ts";
 import type { AcademicRepository } from "./repository.ts";
+import { addCortexDays, startOfCortexDay } from "../lib/time.ts";
 
 const uuid = z.string().uuid();
 const isoDate = z.string().datetime({ offset: true });
@@ -30,17 +31,14 @@ export class AcademicService {
   }
 
   async getToday(now = new Date()) {
-    const start = new Date(now);
-    start.setHours(0, 0, 0, 0);
-    const end = new Date(start);
-    end.setDate(end.getDate() + 1);
+    const start = startOfCortexDay(now);
+    const end = addCortexDays(now, 1);
     return this.repository.listAcademicItems({ from: start.toISOString(), to: end.toISOString() });
   }
 
   async getUpcoming(days = 14, now = new Date()) {
     const safeDays = Math.max(1, Math.min(days, 365));
-    const end = new Date(now);
-    end.setDate(end.getDate() + safeDays);
+    const end = addCortexDays(now, safeDays + 1);
     return this.repository.listAcademicItems({ from: now.toISOString(), to: end.toISOString() });
   }
 

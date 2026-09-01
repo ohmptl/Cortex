@@ -119,7 +119,13 @@ async function bootstrap(context: Context, counts: SyncCounts) {
   for (const course of courses) {
     const courseId = text(course.id);
     if (allowed.has("core_course_get_contents")) tasks.push({ phase: "contents", scope_external_id: courseId });
-    if (allowed.has("core_calendar_get_action_events_by_course") || allowed.has("core_calendar_get_action_events_by_timesort") || allowed.has("core_calendar_get_action_events_by_courses")) tasks.push({ phase: "events", scope_external_id: courseId });
+    if (
+      allowed.has("core_calendar_get_action_events_by_course") ||
+      allowed.has("core_calendar_get_action_events_by_timesort") ||
+      allowed.has("core_calendar_get_action_events_by_courses") ||
+      allowed.has("mod_assign_get_assignments") ||
+      allowed.has("mod_quiz_get_quizzes_by_courses")
+    ) tasks.push({ phase: "events", scope_external_id: courseId });
     if (allowed.has("gradereport_user_get_grade_items")) tasks.push({ phase: "grades", scope_external_id: courseId });
   }
   if (tasks.length) {
@@ -192,65 +198,134 @@ async function events(context: Context, counts: SyncCounts) {
   const courseId = await referenceTarget(context.client, context.connection_id, "course", courseExternalId, "course_id");
   if (!courseId) throw new Error(`Course ${courseExternalId} has no Cortex identity`);
   const events: JsonObject[] = [];
-  let afterEventId = 0;
-  for (let page = 0; page < 100; page += 1) {
-    const byCourse = context.allowed.has("core_calendar_get_action_events_by_course");
-    const byCourses = !byCourse && context.allowed.has("core_calendar_get_action_events_by_courses");
-    const fn = byCourse ? "core_calendar_get_action_events_by_course" : byCourses ? "core_calendar_get_action_events_by_courses" : "core_calendar_get_action_events_by_timesort";
-    const response = await moodleCall<JsonObject>(context.baseUrl, context.token, fn, {
-      ...(byCourse ? { courseid: courseExternalId } : byCourses ? { courseids: [courseExternalId] } : {}), timesortfrom: Math.floor(Date.now() / 1000) - 30 * 86400,
-      aftereventid: afterEventId, limitnum: 50,
-    });
-    const batch = (Array.isArray(response.events) ? response.events as JsonObject[] : [])
-      .filter((event) => byCourse || byCourses || text(event.courseid) === courseExternalId);
-    events.push(...batch);
-    const unfiltered = Array.isArray(response.events) ? response.events as JsonObject[] : [];
-    if (unfiltered.length < 50 || response.moreevents === false) break;
-    const nextId = Number(unfiltered.at(-1)?.id ?? 0);
-    if (!nextId || nextId === afterEventId) throw new Error("Moodle action-event pagination did not advance");
-    afterEventId = nextId;
-  }
+  const byCourse = context.allowed.has("core_calendar_get_action_events_by_course");
+  const byCourses = !byCourse && context.allowed.has("core_calendar_get_action_events_by_courses");
+  const byTimesort = !byCourse && !byCourses && context.allowed.has("core_calendar_get_action_events_by_timesort");
+  const calendarFunction = byCourse ? "core_calendar_get_action_events_by_course" : byCourses ? "core_calendar_get_action_events_by_courses" : byTimesort ? "core_calendar_get_action_events_by_timesort" : null;
+  let calendarComplete = false;
+  if (calendarFunction) try {
+    let afterEventId = 0;
+    for (let page = 0; page < 100; page += 1) {
+      const response = await moodleCall<JsonObject>(context.baseUrl, context.token, calendarFunction, {
+        ...(byCourse ? { courseid: courseExternalId } : byCourses ? { courseids: [courseExternalId] } : {}),
+        timesortfrom: Math.floor(Date.now() / 1000) - 30 * 86400,
+        aftereventid: afterEventId,
+        limitnum: 50,
+      });
+      const unfiltered = Array.isArray(response.events) ? response.events as JsonObject[] : [];
+      events.push(...unfiltered.filter((event) => byCourse || byCourses || text(event.courseid) === courseExternalId));
+      if (unfiltered.length < 50 || response.moreevents === false) break;
+      const nextId = Number(unfiltered.at(-1)?.id ?? 0);
+      if (!nextId || nextId === afterEventId) throw new Error("Moodle action-event pagination did not advance");
+      afterEventId = nextId;
+    }
+    calendarComplete = true;
+  } catch (error) { optionalFailure(context, counts, calendarFunction, error); }
+
   let assignments = new Map<string, JsonObject>();
   let quizzes = new Map<string, JsonObject>();
+  let assignmentsComplete = false;
+  let quizzesComplete = false;
   if (context.allowed.has("mod_assign_get_assignments")) try {
     const response = await moodleCall<JsonObject>(context.baseUrl, context.token, "mod_assign_get_assignments", { courseids: [courseExternalId] });
     const rows = Array.isArray(response.courses) ? (response.courses as JsonObject[]).flatMap((course) => Array.isArray(course.assignments) ? course.assignments as JsonObject[] : []) : [];
     assignments = new Map(rows.map((row) => [text(row.id), row]));
+    assignmentsComplete = true;
   } catch (error) { optionalFailure(context, counts, "mod_assign_get_assignments", error); }
   if (context.allowed.has("mod_quiz_get_quizzes_by_courses")) try {
     const response = await moodleCall<JsonObject>(context.baseUrl, context.token, "mod_quiz_get_quizzes_by_courses", { courseids: [courseExternalId] });
     const rows = Array.isArray(response.quizzes) ? response.quizzes as JsonObject[] : [];
     quizzes = new Map(rows.map((row) => [text(row.id), row]));
+    quizzesComplete = true;
   } catch (error) { optionalFailure(context, counts, "mod_quiz_get_quizzes_by_courses", error); }
+
+  const assignmentRawIds = new Map<string, string>();
+  for (const [externalId, assignment] of assignments) assignmentRawIds.set(externalId, await upsertRaw(context.client, {
+    ownerId: context.owner_id, connectionId: context.connection_id, runId: context.sync_run_id,
+    objectType: "assignment", externalId, externalCourseId: courseExternalId, payload: assignment,
+  }, counts));
+  const quizRawIds = new Map<string, string>();
+  for (const [externalId, quiz] of quizzes) quizRawIds.set(externalId, await upsertRaw(context.client, {
+    ownerId: context.owner_id, connectionId: context.connection_id, runId: context.sync_run_id,
+    objectType: "quiz", externalId, externalCourseId: courseExternalId, payload: quiz,
+  }, counts));
+
+  async function assignmentSubmission(instance: string): Promise<string | null> {
+    if (!instance || !context.allowed.has("mod_assign_get_submission_status")) return null;
+    try {
+      const submission = await moodleCall<JsonObject>(context.baseUrl, context.token, "mod_assign_get_submission_status", { assignid: instance });
+      await upsertRaw(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, runId: context.sync_run_id, objectType: "assignment-submission", externalId: instance, externalCourseId: courseExternalId, payload: submission }, counts);
+      const lastAttempt = submission.lastattempt as JsonObject | undefined;
+      return text((lastAttempt?.submission as JsonObject | undefined)?.status) || null;
+    } catch (error) {
+      optionalFailure(context, counts, "mod_assign_get_submission_status", error);
+      return null;
+    }
+  }
+
+  async function writeItem(itemExternalId: string, rawId: string, values: JsonObject): Promise<string> {
+    const existingItem = await referenceTarget(context.client, context.connection_id, "academic-item", itemExternalId, "academic_item_id");
+    const result = existingItem
+      ? await context.client.from("academic_items").update(values).eq("id", existingItem).select("id").single()
+      : await context.client.from("academic_items").insert(values).select("id").single();
+    if (result.error) throw result.error;
+    await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "academic-item", externalId: itemExternalId, externalCourseId: courseExternalId, rawId, targetColumn: "academic_item_id", targetId: result.data.id });
+    return result.data.id as string;
+  }
+
+  const seenItems = new Set<string>();
   for (const event of events) {
     const eventExternalId = text(event.id);
+    if (!eventExternalId) continue;
     const moduleName = text(event.modulename).toLowerCase();
     const instance = text(event.instance);
     const itemExternalId = moduleName && instance ? `activity:${moduleName}:${instance}` : text(event.cmid) ? `course-module:${text(event.cmid)}` : `calendar-event:${eventExternalId}`;
     const enrichment = moduleName === "assign" ? assignments.get(instance) : moduleName === "quiz" ? quizzes.get(instance) : undefined;
-    const rawId = await upsertRaw(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, runId: context.sync_run_id, objectType: "calendar-event", externalId: eventExternalId, externalCourseId: courseExternalId, payload: event }, counts);
-    const existingItem = await referenceTarget(context.client, context.connection_id, "academic-item", itemExternalId, "academic_item_id");
+    const eventRawId = await upsertRaw(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, runId: context.sync_run_id, objectType: "calendar-event", externalId: eventExternalId, externalCourseId: courseExternalId, payload: event }, counts);
+    const authoritativeRawId = moduleName === "assign" ? assignmentRawIds.get(instance) ?? eventRawId : moduleName === "quiz" ? quizRawIds.get(instance) ?? eventRawId : eventRawId;
     const moduleId = text(event.cmid) ? await referenceTarget(context.client, context.connection_id, "course-module", text(event.cmid), "course_module_id") : null;
-    let submissionState: string | null = null;
-    if (moduleName === "assign" && instance && context.allowed.has("mod_assign_get_submission_status")) try {
-      const submission = await moodleCall<JsonObject>(context.baseUrl, context.token, "mod_assign_get_submission_status", { assignid: instance });
-      await upsertRaw(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, runId: context.sync_run_id, objectType: "assignment-submission", externalId: instance, externalCourseId: courseExternalId, payload: submission }, counts);
-      const lastAttempt = submission.lastattempt as JsonObject | undefined;
-      const submissionDetails = lastAttempt?.submission as JsonObject | undefined;
-      submissionState = text(submissionDetails?.status) || null;
-    } catch (error) { optionalFailure(context, counts, "mod_assign_get_submission_status", error); }
+    const submissionState = moduleName === "assign" ? await assignmentSubmission(instance) : null;
     const values = { owner_id: context.owner_id, course_id: courseId, module_id: moduleId, origin: "provider", item_type: itemType(moduleName), title: text(enrichment?.name ?? event.name, "Untitled Moodle event"), description: text(enrichment?.intro ?? event.description) || null, source_start_at: iso(event.timestart), source_available_at: iso(enrichment?.allowsubmissionsfromdate ?? enrichment?.timeopen ?? event.timestart), source_due_at: iso(enrichment?.duedate ?? event.timesort ?? event.timestart), source_close_at: iso(enrichment?.cutoffdate ?? enrichment?.timeclose), url: text(event.url) || null, submission_state: submissionState, upstream_state: "present" };
-    const result = existingItem ? await context.client.from("academic_items").update(values).eq("id", existingItem).select("id").single() : await context.client.from("academic_items").insert(values).select("id").single();
-    if (result.error) throw result.error;
-    await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "academic-item", externalId: itemExternalId, externalCourseId: courseExternalId, rawId, targetColumn: "academic_item_id", targetId: result.data.id });
-    await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "calendar-event", externalId: eventExternalId, externalCourseId: courseExternalId, rawId, targetColumn: "academic_item_id", targetId: result.data.id });
+    const itemId = await writeItem(itemExternalId, authoritativeRawId, values);
+    await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "calendar-event", externalId: eventExternalId, externalCourseId: courseExternalId, rawId: eventRawId, targetColumn: "academic_item_id", targetId: itemId });
+    if (moduleName === "assign" && assignmentRawIds.has(instance)) await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "assignment", externalId: instance, externalCourseId: courseExternalId, rawId: assignmentRawIds.get(instance)!, targetColumn: "academic_item_id", targetId: itemId });
+    if (moduleName === "quiz" && quizRawIds.has(instance)) await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "quiz", externalId: instance, externalCourseId: courseExternalId, rawId: quizRawIds.get(instance)!, targetColumn: "academic_item_id", targetId: itemId });
+    seenItems.add(itemExternalId);
   }
-  const staleIds = await markRawMissing(context, counts, ["calendar-event"], courseExternalId);
-  if (staleIds.length) {
-    const { data: references } = await context.client.from("source_references").select("academic_item_id").eq("connection_id", context.connection_id).eq("object_type", "academic-item").in("raw_source_record_id", staleIds);
-    const itemIds = (references ?? []).flatMap((row) => row.academic_item_id ? [row.academic_item_id] : []);
-    if (itemIds.length) await context.client.from("academic_items").update({ upstream_state: "missing" }).in("id", itemIds);
+
+  for (const [instance, assignment] of assignments) {
+    const itemExternalId = `activity:assign:${instance}`;
+    if (seenItems.has(itemExternalId)) continue;
+    const cmid = text(assignment.cmid ?? assignment.coursemodule);
+    const moduleId = cmid ? await referenceTarget(context.client, context.connection_id, "course-module", cmid, "course_module_id") : null;
+    const rawId = assignmentRawIds.get(instance)!;
+    const itemId = await writeItem(itemExternalId, rawId, {
+      owner_id: context.owner_id, course_id: courseId, module_id: moduleId, origin: "provider", item_type: "assignment",
+      title: text(assignment.name, "Untitled assignment"), description: text(assignment.intro) || null,
+      source_start_at: null, source_available_at: iso(assignment.allowsubmissionsfromdate), source_due_at: iso(assignment.duedate),
+      source_close_at: iso(assignment.cutoffdate), submission_state: await assignmentSubmission(instance), upstream_state: "present",
+    });
+    await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "assignment", externalId: instance, externalCourseId: courseExternalId, rawId, targetColumn: "academic_item_id", targetId: itemId });
   }
+
+  for (const [instance, quiz] of quizzes) {
+    const itemExternalId = `activity:quiz:${instance}`;
+    if (seenItems.has(itemExternalId)) continue;
+    const cmid = text(quiz.coursemodule ?? quiz.cmid);
+    const moduleId = cmid ? await referenceTarget(context.client, context.connection_id, "course-module", cmid, "course_module_id") : null;
+    const rawId = quizRawIds.get(instance)!;
+    const itemId = await writeItem(itemExternalId, rawId, {
+      owner_id: context.owner_id, course_id: courseId, module_id: moduleId, origin: "provider", item_type: "quiz",
+      title: text(quiz.name, "Untitled quiz"), description: text(quiz.intro) || null,
+      source_start_at: null, source_available_at: iso(quiz.timeopen), source_due_at: iso(quiz.timeclose),
+      source_close_at: iso(quiz.timeclose), submission_state: null, upstream_state: "present",
+    });
+    await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "quiz", externalId: instance, externalCourseId: courseExternalId, rawId, targetColumn: "academic_item_id", targetId: itemId });
+  }
+
+  if (calendarComplete) await markRawMissing(context, counts, ["calendar-event"], courseExternalId);
+  if (assignmentsComplete) await markRawMissing(context, counts, ["assignment"], courseExternalId);
+  if (quizzesComplete) await markRawMissing(context, counts, ["quiz"], courseExternalId);
 }
 
 function numeric(value: unknown): number | null {
@@ -302,14 +377,10 @@ async function grades(context: Context, counts: SyncCounts) {
   await markRawMissing(context, counts, ["grade-category", "grade-item"], courseExternalId);
 }
 
-Deno.serve(async (request) => {
-  if (!hasServiceRole(request)) return new Response("Unauthorized", { status: 401 });
-  const client = adminClient();
-  const workerToken = crypto.randomUUID();
-  const { data: tasks, error: claimError } = await client.rpc("claim_sync_tasks", { worker_token: workerToken, task_limit: 1 });
-  if (claimError) return Response.json({ error: claimError.message }, { status: 500 });
-  if (!tasks?.length) return Response.json({ processed: 0 });
-  const task = tasks[0] as Task;
+type TaskResult = { task: string; run: string; phase: string; counts: SyncCounts; error: string | null };
+
+async function processTask(client: Client, workerToken: string, task: Task): Promise<TaskResult> {
+  const stepStartedAt = new Date().toISOString();
   await client.from("sync_runs").update({ status: "running", started_at: new Date().toISOString(), heartbeat_at: new Date().toISOString() }).eq("id", task.sync_run_id).eq("status", "queued");
   const { data: connection } = await client.from("provider_connections").select("base_url,external_user_id").eq("id", task.connection_id).single();
   const { data: credential } = await client.from("provider_credentials").select("encrypted_payload").eq("connection_id", task.connection_id).single();
@@ -330,7 +401,7 @@ Deno.serve(async (request) => {
     errorMessage = error instanceof Error ? error.message : "Unknown synchronization error";
     counts.failed += 1;
   }
-  await client.from("sync_run_steps").insert({ owner_id: task.owner_id, sync_run_id: task.sync_run_id, capability_name: task.phase, scope_type: task.scope_external_id ? "course" : "connection", scope_external_id: task.scope_external_id, status: errorMessage ? "failed" : "succeeded", inserted_count: counts.inserted, updated_count: counts.updated, unchanged_count: counts.unchanged, missing_count: counts.missing, error_code: errorMessage ? "sync_phase_failed" : null, error_message: errorMessage, started_at: new Date().toISOString(), finished_at: new Date().toISOString() });
+  await client.from("sync_run_steps").insert({ owner_id: task.owner_id, sync_run_id: task.sync_run_id, capability_name: task.phase, scope_type: task.scope_external_id ? "course" : "connection", scope_external_id: task.scope_external_id, status: errorMessage ? "failed" : "succeeded", inserted_count: counts.inserted, updated_count: counts.updated, unchanged_count: counts.unchanged, missing_count: counts.missing, error_code: errorMessage ? "sync_phase_failed" : null, error_message: errorMessage, started_at: stepStartedAt, finished_at: new Date().toISOString() });
   if (optionalFailures.length) await client.from("sync_run_steps").insert(optionalFailures.map((failure) => ({
     owner_id: task.owner_id, sync_run_id: task.sync_run_id, capability_name: failure.capability,
     scope_type: task.scope_external_id ? "course" : "connection", scope_external_id: task.scope_external_id,
@@ -344,6 +415,27 @@ Deno.serve(async (request) => {
     p_missing_delta: counts.missing, p_skipped_delta: counts.skipped, p_failed_delta: counts.failed,
     p_error_code: errorMessage ? "sync_phase_failed" : null, p_error_message: errorMessage, p_mandatory_failure: mandatory,
   });
-  if (finishError) return Response.json({ error: finishError.message }, { status: 500 });
-  return Response.json({ processed: 1, task: task.id, phase: task.phase, counts, error: errorMessage });
+  if (finishError) throw finishError;
+  return { task: task.id, run: task.sync_run_id, phase: task.phase, counts, error: errorMessage };
+}
+
+Deno.serve(async (request) => {
+  if (!hasServiceRole(request)) return new Response("Unauthorized", { status: 401 });
+  const client = adminClient();
+  const workerToken = crypto.randomUUID();
+  const startedAt = Date.now();
+  const results: TaskResult[] = [];
+
+  try {
+    while (results.length < 40 && Date.now() - startedAt < 45_000) {
+      const { data: tasks, error: claimError } = await client.rpc("claim_sync_tasks", { worker_token: workerToken, task_limit: 1 });
+      if (claimError) throw claimError;
+      if (!tasks?.length) break;
+      results.push(await processTask(client, workerToken, tasks[0] as Task));
+    }
+    const { count: remaining } = await client.from("sync_tasks").select("id", { count: "exact", head: true }).in("status", ["queued", "running"]);
+    return Response.json({ processed: results.length, remaining: remaining ?? 0, elapsedMs: Date.now() - startedAt, results });
+  } catch (error) {
+    return Response.json({ processed: results.length, error: error instanceof Error ? error.message : "Worker batch failed", results }, { status: 500 });
+  }
 });

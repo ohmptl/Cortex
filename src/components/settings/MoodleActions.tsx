@@ -25,9 +25,11 @@ export function MoodleActions({ connected }: { connected: boolean }) {
   async function syncNow() {
     setBusy(true); setMessage(null);
     const response = await fetch("/api/sync/now", { method: "POST" });
-    const body = await response.json() as { error?: string; runId?: string };
+    const body = await response.json() as { error?: string; runId?: string; workerStarted?: boolean; processed?: number; remaining?: number | null; workerError?: string | null };
     setBusy(false);
-    setMessage(response.ok ? `Synchronization queued as ${body.runId}.` : body.error ?? "Unable to queue synchronization");
+    if (!response.ok) setMessage(body.error ?? "Unable to queue synchronization");
+    else if (!body.workerStarted) setMessage(`Run ${body.runId} was queued, but the worker did not start${body.workerError ? `: ${body.workerError}` : ". Check the Edge Function deployment and service-role variable."}`);
+    else setMessage(`Run ${body.runId} processed ${body.processed ?? 0} phases${body.remaining ? `; ${body.remaining} remain queued for the minute worker` : " and drained the queue"}.`);
     if (response.ok) router.refresh();
   }
 

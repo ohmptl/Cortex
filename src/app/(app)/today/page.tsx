@@ -1,17 +1,17 @@
 import { ItemRow } from "@/components/academic/ItemRow";
 import { requireAcademicRepository } from "@/domain/auth";
 import type { AcademicItem } from "@/domain/types";
+import { addCortexDays, formatCortexDate, startOfCortexDay } from "@/lib/time";
 
 export const dynamic = "force-dynamic";
 
 export default async function TodayPage() {
   const { repository } = await requireAcademicRepository();
   const now = new Date();
-  const end = new Date(now);
-  end.setDate(end.getDate() + 14);
+  const end = addCortexDays(now, 15);
   const items = await repository.listAcademicItems({ to: end.toISOString() });
-  const dayStart = new Date(now); dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(dayStart); dayEnd.setDate(dayEnd.getDate() + 1);
+  const dayStart = startOfCortexDay(now);
+  const dayEnd = addCortexDays(now, 1);
   const incomplete = items.filter((item) => item.status !== "completed" && item.status !== "cancelled");
   const overdue = incomplete.filter((item) => item.dueAt && new Date(item.dueAt) < dayStart);
   const today = incomplete.filter((item) => item.dueAt && new Date(item.dueAt) >= dayStart && new Date(item.dueAt) < dayEnd);
@@ -20,7 +20,7 @@ export default async function TodayPage() {
   return (
     <>
       <header className="page-header">
-        <div><p className="eyebrow">Agenda / {now.toLocaleDateString("en-US", { month: "long", day: "numeric" })}</p><h1>Today</h1></div>
+        <div><p className="eyebrow">Agenda / {formatCortexDate(now, { month: "long", day: "numeric" })}</p><h1>Today</h1></div>
         <p className="dek">The work that needs attention now, sourced from Cortex rather than inferred from a single Moodle module.</p>
       </header>
       <AgendaSection number="01" title="Overdue" items={overdue} />
