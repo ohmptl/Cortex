@@ -1,4 +1,5 @@
 import { adminClient, decryptCredential, emptyCounts, hasServiceRole, iso, moodleCall, sourceTarget, text, upsertRaw, type JsonObject, type SyncCounts } from "../_shared/moodle.ts";
+import { hasMoodleGradeResult, isMoodleActivityComplete } from "../_shared/completion.ts";
 
 const desiredGroups: Record<string, string[]> = {
   site: ["core_webservice_get_site_info"], courses: ["core_enrol_get_users_courses"],
@@ -24,6 +25,20 @@ function errorText(error: unknown): string {
 function optionalFailure(context: Context, counts: SyncCounts, capability: string, error: unknown) {
   counts.failed += 1;
   context.optionalFailures.push({ capability, message: errorText(error) });
+}
+
+function eventModuleExternalId(event: JsonObject): string {
+  const direct = text(event.cmid ?? event.activityid);
+  if (direct) return direct;
+  const action = event.action as JsonObject | undefined;
+  for (const candidate of [text(event.url), text(action?.url)]) {
+    if (!candidate) continue;
+    try {
+      const id = new URL(candidate).searchParams.get("id");
+      if (id) return id;
+    } catch { /* A malformed optional URL cannot block workload ingestion. */ }
+  }
+  return "";
 }
 
 async function markRawMissing(context: Context, counts: SyncCounts, objectTypes: string[], courseExternalId?: string) {
@@ -141,6 +156,7 @@ async function contents(context: Context, counts: SyncCounts) {
   const courseId = await referenceTarget(context.client, context.connection_id, "course", courseExternalId, "course_id");
   if (!courseId) throw new Error(`Course ${courseExternalId} has no Cortex identity`);
   const sections = await moodleCall<JsonObject[]>(context.baseUrl, context.token, "core_course_get_contents", { courseid: courseExternalId });
+  const moduleIdByExternalId = new Map<string, string>();
   for (const [sectionPosition, section] of sections.entries()) {
     const sectionExternalId = text(section.id ?? section.section, `${courseExternalId}:${sectionPosition}`);
     const rawId = await upsertRaw(context.client, {
@@ -166,8 +182,29 @@ async function contents(context: Context, counts: SyncCounts) {
       const values = { owner_id: context.owner_id, course_id: courseId, section_id: sectionResult.data.id, module_type: text(module.modname, "other"), title: text(module.name, "Untitled module"), description: text(module.description) || null, url: text(module.url) || null, position, visible: module.visible !== false && module.visible !== 0, availability: module.availability ?? {}, completion_metadata: module.completiondata ?? {} };
       const result = existingModule ? await context.client.from("course_modules").update(values).eq("id", existingModule).select("id").single() : await context.client.from("course_modules").insert(values).select("id").single();
       if (result.error) throw result.error;
+      moduleIdByExternalId.set(moduleExternalId, text(result.data.id));
       await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "course-module", externalId: moduleExternalId, externalCourseId: courseExternalId, rawId: moduleRawId, targetColumn: "course_module_id", targetId: result.data.id });
     }
+  }
+  const [{ data: rawEvents, error: rawEventsError }, { data: eventReferences, error: eventReferencesError }] = await Promise.all([
+    context.client.from("raw_source_records").select("external_id,payload").eq("connection_id", context.connection_id)
+      .eq("object_type", "calendar-event").eq("external_course_id", courseExternalId).eq("upstream_state", "present"),
+    context.client.from("source_references").select("external_id,academic_item_id").eq("connection_id", context.connection_id)
+      .eq("object_type", "calendar-event").eq("external_course_id", courseExternalId),
+  ]);
+  if (rawEventsError) throw rawEventsError;
+  if (eventReferencesError) throw eventReferencesError;
+  const itemIdByEventId = new Map((eventReferences ?? []).flatMap((row) => row.academic_item_id
+    ? [[text(row.external_id), text(row.academic_item_id)]]
+    : []));
+  for (const rawEvent of rawEvents ?? []) {
+    const moduleExternalId = eventModuleExternalId(rawEvent.payload as JsonObject);
+    const moduleId = moduleIdByExternalId.get(moduleExternalId);
+    const itemId = itemIdByEventId.get(text(rawEvent.external_id));
+    if (!moduleId || !itemId) continue;
+    const { error } = await context.client.from("academic_items").update({ module_id: moduleId })
+      .eq("owner_id", context.owner_id).eq("id", itemId);
+    if (error) throw error;
   }
   if (context.allowed.has("core_completion_get_activities_completion_status")) {
     try {
@@ -178,7 +215,7 @@ async function contents(context: Context, counts: SyncCounts) {
         const moduleId = await referenceTarget(context.client, context.connection_id, "course-module", text(status.cmid), "course_module_id");
         if (!moduleId) continue;
         await context.client.from("course_modules").update({ completion_metadata: status }).eq("id", moduleId);
-        const complete = status.state === 1 || status.state === 2 || status.complete === true;
+        const complete = isMoodleActivityComplete(status);
         await context.client.from("academic_items").update({
           completion_state: text(status.state ?? status.status) || null,
           ...(complete ? { status: "completed", completed_at: iso(status.timecompleted) ?? new Date().toISOString() } : {}),
@@ -261,12 +298,16 @@ async function events(context: Context, counts: SyncCounts) {
   const normalizedIdByExternalId = new Map((moduleReferences ?? []).flatMap((row) => row.course_module_id ? [[text(row.external_id), text(row.course_module_id)]] : []));
   const normalizedIds = [...new Set(normalizedIdByExternalId.values())];
   const normalizedUrlById = new Map<string, string>();
+  const normalizedCompletionById = new Map<string, JsonObject>();
   if (normalizedIds.length) {
-    const { data: normalizedModules, error: normalizedModulesError } = await context.client.from("course_modules").select("id,url").in("id", normalizedIds);
+    const { data: normalizedModules, error: normalizedModulesError } = await context.client.from("course_modules").select("id,url,completion_metadata").in("id", normalizedIds);
     if (normalizedModulesError) throw normalizedModulesError;
-    for (const row of normalizedModules ?? []) if (row.url) normalizedUrlById.set(text(row.id), text(row.url));
+    for (const row of normalizedModules ?? []) {
+      if (row.url) normalizedUrlById.set(text(row.id), text(row.url));
+      if (row.completion_metadata && typeof row.completion_metadata === "object") normalizedCompletionById.set(text(row.id), row.completion_metadata as JsonObject);
+    }
   }
-  type ModuleInfo = { externalId: string; normalizedId: string | null; moduleName: string; instance: string; url: string | null };
+  type ModuleInfo = { externalId: string; normalizedId: string | null; moduleName: string; instance: string; url: string | null; completion: JsonObject };
   const moduleByExternalId = new Map<string, ModuleInfo>();
   const moduleByActivity = new Map<string, ModuleInfo>();
   for (const row of rawModules ?? []) {
@@ -279,6 +320,8 @@ async function events(context: Context, counts: SyncCounts) {
       moduleName: text(payload.modname).toLowerCase(),
       instance: text(payload.instance),
       url: ((normalizedId ? normalizedUrlById.get(normalizedId) : undefined) ?? text(payload.url)) || null,
+      completion: (normalizedId ? normalizedCompletionById.get(normalizedId) : undefined)
+        ?? (payload.completiondata && typeof payload.completiondata === "object" ? payload.completiondata as JsonObject : {}),
     };
     moduleByExternalId.set(externalId, info);
     if (info.moduleName && info.instance) moduleByActivity.set(`${info.moduleName}:${info.instance}`, info);
@@ -294,6 +337,7 @@ async function events(context: Context, counts: SyncCounts) {
       moduleName: "assign",
       instance,
       url: existing?.url ?? directActivityUrl("assign", externalId),
+      completion: existing?.completion ?? {},
     };
     moduleByExternalId.set(externalId, info);
     moduleByActivity.set(`assign:${instance}`, info);
@@ -308,23 +352,10 @@ async function events(context: Context, counts: SyncCounts) {
       moduleName: "quiz",
       instance,
       url: existing?.url ?? directActivityUrl("quiz", externalId),
+      completion: existing?.completion ?? {},
     };
     moduleByExternalId.set(externalId, info);
     moduleByActivity.set(`quiz:${instance}`, info);
-  }
-
-  function eventModuleExternalId(event: JsonObject): string {
-    const direct = text(event.cmid ?? event.activityid);
-    if (direct) return direct;
-    const action = event.action as JsonObject | undefined;
-    for (const candidate of [text(event.url), text(action?.url)]) {
-      if (!candidate) continue;
-      try {
-        const id = new URL(candidate).searchParams.get("id");
-        if (id) return id;
-      } catch { /* A malformed optional URL cannot block workload ingestion. */ }
-    }
-    return "";
   }
 
   function directActivityUrl(moduleName: string, moduleExternalId: string): string | null {
@@ -361,8 +392,8 @@ async function events(context: Context, counts: SyncCounts) {
     batch.forEach((instance, index) => submissionByInstance.set(instance, projections[index]));
   }
 
-  async function writeItem(itemExternalId: string, rawId: string, values: JsonObject): Promise<string> {
-    const existingItem = await referenceTarget(context.client, context.connection_id, "academic-item", itemExternalId, "academic_item_id");
+  async function writeItem(itemExternalId: string, rawId: string, values: JsonObject, fallbackItemId: string | null = null): Promise<string> {
+    const existingItem = await referenceTarget(context.client, context.connection_id, "academic-item", itemExternalId, "academic_item_id") ?? fallbackItemId;
     const result = existingItem
       ? await context.client.from("academic_items").update(values).eq("id", existingItem).select("id").single()
       : await context.client.from("academic_items").insert(values).select("id").single();
@@ -385,6 +416,9 @@ async function events(context: Context, counts: SyncCounts) {
     const eventRawId = await upsertRaw(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, runId: context.sync_run_id, objectType: "calendar-event", externalId: eventExternalId, externalCourseId: courseExternalId, payload: event }, counts);
     const authoritativeRawId = moduleName === "assign" ? assignmentRawIds.get(instance) ?? eventRawId : moduleName === "quiz" ? quizRawIds.get(instance) ?? eventRawId : eventRawId;
     const submission = moduleName === "assign" ? submissionByInstance.get(instance) ?? null : null;
+    const moduleCompleted = resolvedModule ? isMoodleActivityComplete(resolvedModule.completion) : false;
+    const completionState = resolvedModule ? text(resolvedModule.completion.state ?? resolvedModule.completion.status) || null : null;
+    const calendarItemId = await referenceTarget(context.client, context.connection_id, "calendar-event", eventExternalId, "academic_item_id");
     const values = {
       owner_id: context.owner_id, course_id: courseId, module_id: resolvedModule?.normalizedId ?? null,
       origin: "provider", item_type: itemType(moduleName), title: text(enrichment?.name ?? event.name, "Untitled Moodle event"),
@@ -393,10 +427,13 @@ async function events(context: Context, counts: SyncCounts) {
       source_due_at: iso(enrichment?.duedate ?? event.timesort ?? event.timestart),
       source_close_at: iso(enrichment?.cutoffdate ?? enrichment?.timeclose),
       url: text(event.url) || resolvedModule?.url || directActivityUrl(moduleName, moduleExternalId),
-      submission_state: submission?.state ?? null, upstream_state: "present",
-      ...(submission?.completed ? { status: "completed", completed_at: submission.completedAt ?? new Date().toISOString() } : {}),
+      submission_state: submission?.state ?? null, completion_state: completionState, upstream_state: "present",
+      ...(submission?.completed || moduleCompleted ? {
+        status: "completed",
+        completed_at: submission?.completedAt ?? iso(resolvedModule?.completion.timecompleted) ?? new Date().toISOString(),
+      } : {}),
     };
-    const itemId = await writeItem(itemExternalId, authoritativeRawId, values);
+    const itemId = await writeItem(itemExternalId, authoritativeRawId, values, calendarItemId);
     await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "calendar-event", externalId: eventExternalId, externalCourseId: courseExternalId, rawId: eventRawId, targetColumn: "academic_item_id", targetId: itemId });
     if (moduleName === "assign" && assignmentRawIds.has(instance)) await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "assignment", externalId: instance, externalCourseId: courseExternalId, rawId: assignmentRawIds.get(instance)!, targetColumn: "academic_item_id", targetId: itemId });
     if (moduleName === "quiz" && quizRawIds.has(instance)) await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "quiz", externalId: instance, externalCourseId: courseExternalId, rawId: quizRawIds.get(instance)!, targetColumn: "academic_item_id", targetId: itemId });
@@ -482,10 +519,17 @@ async function grades(context: Context, counts: SyncCounts) {
     const moduleName = text(item.itemmodule);
     const instance = text(item.iteminstance);
     const academicItemId = moduleName && instance ? await referenceTarget(context.client, context.connection_id, "academic-item", `activity:${moduleName}:${instance}`, "academic_item_id") : null;
-    const values = { owner_id: context.owner_id, course_id: courseId, category_id: categoryId, academic_item_id: academicItemId, name: text(item.itemname, "Grade item"), item_type: text(item.itemtype) || null, module_type: moduleName || null, module_instance_id: instance || null, item_number: numeric(item.itemnumber), score: numeric(item.graderaw ?? item.gradeformatted), minimum_score: numeric(item.grademin), maximum_score: numeric(item.grademax), percentage: numeric(item.percentageformatted), weight: numeric(item.weightformatted), feedback: text(item.feedback) || null, hidden: item.hidden === true || item.hidden === 1, position, graded_at: iso(item.gradedatesubmitted ?? item.gradedategraded) };
+    const gradedAt = iso(item.gradedatesubmitted ?? item.gradedategraded);
+    const values = { owner_id: context.owner_id, course_id: courseId, category_id: categoryId, academic_item_id: academicItemId, name: text(item.itemname, "Grade item"), item_type: text(item.itemtype) || null, module_type: moduleName || null, module_instance_id: instance || null, item_number: numeric(item.itemnumber), score: numeric(item.graderaw ?? item.gradeformatted), minimum_score: numeric(item.grademin), maximum_score: numeric(item.grademax), percentage: numeric(item.percentageformatted), weight: numeric(item.weightformatted), feedback: text(item.feedback) || null, hidden: item.hidden === true || item.hidden === 1, position, graded_at: gradedAt };
     const result = existing ? await context.client.from("grade_items").update(values).eq("id", existing).select("id").single() : await context.client.from("grade_items").insert(values).select("id").single();
     if (result.error) throw result.error;
     await sourceTarget(context.client, { ownerId: context.owner_id, connectionId: context.connection_id, objectType: "grade-item", externalId, externalCourseId: courseExternalId, rawId, targetColumn: "grade_item_id", targetId: result.data.id });
+    if (academicItemId && hasMoodleGradeResult(item)) {
+      const { error } = await context.client.from("academic_items").update({
+        status: "completed", completion_state: "graded", completed_at: gradedAt ?? new Date().toISOString(),
+      }).eq("owner_id", context.owner_id).eq("id", academicItemId);
+      if (error) throw error;
+    }
   }
   await markRawMissing(context, counts, ["grade-category", "grade-item"], courseExternalId);
 }
@@ -553,7 +597,7 @@ Deno.serve(async (request) => {
       if (!tasks?.length) {
         if (requestedRunId && Date.now() - startedAt < workBudgetMs) {
           const { count: pending } = await client.from("sync_tasks").select("id", { count: "exact", head: true })
-            .eq("sync_run_id", requestedRunId).in("phase", ["bootstrap", "events"]).in("status", ["queued", "running"]);
+            .eq("sync_run_id", requestedRunId).in("phase", ["bootstrap", "contents", "events"]).in("status", ["queued", "running"]);
           if (pending) {
             await new Promise((resolve) => setTimeout(resolve, 300));
             continue;
@@ -569,9 +613,9 @@ Deno.serve(async (request) => {
     }
     let remainingQuery = client.from("sync_tasks").select("id", { count: "exact", head: true }).in("status", ["queued", "running"]);
     let deadlinesQuery = client.from("sync_tasks").select("id", { count: "exact", head: true })
-      .in("phase", ["bootstrap", "events"]).in("status", ["queued", "running"]);
+      .in("phase", ["bootstrap", "contents", "events"]).in("status", ["queued", "running"]);
     let deadlineFailuresQuery = client.from("sync_tasks").select("id", { count: "exact", head: true })
-      .in("phase", ["bootstrap", "events"]).eq("status", "failed");
+      .in("phase", ["bootstrap", "contents", "events"]).eq("status", "failed");
     if (requestedRunId) {
       remainingQuery = remainingQuery.eq("sync_run_id", requestedRunId);
       deadlinesQuery = deadlinesQuery.eq("sync_run_id", requestedRunId);
