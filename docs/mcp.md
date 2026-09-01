@@ -2,10 +2,10 @@
 
 ## Endpoint and transport
 
-The production endpoint is the value of `MCP_RESOURCE_URL`, normally:
+The production endpoint is:
 
 ```text
-https://cortex.example.com/api/mcp
+https://cortex.ohmptl.com/api/mcp
 ```
 
 It uses stateless MCP Streamable HTTP. `POST` handles JSON-RPC requests; standalone `GET` streams and legacy HTTP+SSE are not enabled. The server validates protocol messages through the official TypeScript SDK and rejects unapproved browser origins.
@@ -23,7 +23,7 @@ In the Supabase dashboard:
 5. Configure the application Site URL to the Cortex deployment.
 6. Add a Custom Access Token Hook that assigns the Cortex endpoint as the audience for OAuth-issued tokens.
 
-Example hook—replace the URL before applying:
+Production hook:
 
 ```sql
 create or replace function public.cortex_mcp_access_token_hook(event jsonb)
@@ -35,7 +35,7 @@ declare claims jsonb;
 begin
   claims := event->'claims';
   if claims ? 'client_id' then
-    claims := jsonb_set(claims, '{aud}', to_jsonb('https://cortex.example.com/api/mcp'::text));
+    claims := jsonb_set(claims, '{aud}', to_jsonb('https://cortex.ohmptl.com/api/mcp'::text));
   end if;
   return jsonb_build_object('claims', claims);
 end;
