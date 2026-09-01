@@ -25,11 +25,14 @@ export function MoodleActions({ connected }: { connected: boolean }) {
   async function syncNow() {
     setBusy(true); setMessage(null);
     const response = await fetch("/api/sync/now", { method: "POST" });
-    const body = await response.json() as { error?: string; runId?: string; workerStarted?: boolean; processed?: number; remaining?: number | null; workerError?: string | null };
+    const body = await response.json() as { error?: string; workerStarted?: boolean; remaining?: number | null; deadlinesRemaining?: number | null; deadlineFailures?: number; workerError?: string | null };
     setBusy(false);
     if (!response.ok) setMessage(body.error ?? "Unable to queue synchronization");
-    else if (!body.workerStarted) setMessage(`Run ${body.runId} was queued, but the worker did not start${body.workerError ? `: ${body.workerError}` : ". Check the Edge Function deployment and service-role variable."}`);
-    else setMessage(`Run ${body.runId} processed ${body.processed ?? 0} phases${body.remaining ? `; ${body.remaining} remain queued for the minute worker` : " and drained the queue"}.`);
+    else if (!body.workerStarted) setMessage(`Sync could not start${body.workerError ? `: ${body.workerError}` : ". Check the Edge Function deployment and service-role variable."}`);
+    else if (body.deadlineFailures) setMessage("Some Moodle deadlines could not be refreshed. Check the recent synchronization result below.");
+    else if (body.deadlinesRemaining) setMessage("Moodle is still responding. Deadline refresh will finish automatically shortly.");
+    else if (body.remaining) setMessage("Course deadlines are up to date. Grades and resource details are finishing in the background.");
+    else setMessage("Moodle courses, deadlines, and completion state are up to date.");
     if (response.ok) router.refresh();
   }
 

@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { requireAcademicRepository } from "@/domain/auth";
 
-export const maxDuration = 60;
+export const maxDuration = 120;
 
 export async function POST() {
   try {
@@ -12,19 +12,23 @@ export async function POST() {
     let workerStarted = false;
     let processed = 0;
     let remaining: number | null = null;
+    let deadlinesRemaining: number | null = null;
+    let deadlineFailures = 0;
     let workerError: string | null = null;
     if (serviceKey && supabaseUrl) {
       const response = await fetch(`${supabaseUrl}/functions/v1/moodle-sync-worker`, {
         method: "POST", headers: { authorization: `Bearer ${serviceKey}`, "content-type": "application/json" },
-        body: JSON.stringify({ runId }), signal: AbortSignal.timeout(55_000), cache: "no-store",
+        body: JSON.stringify({ runId }), signal: AbortSignal.timeout(115_000), cache: "no-store",
       });
       workerStarted = response.ok;
-      const result = await response.json().catch(() => null) as { processed?: number; remaining?: number; error?: string } | null;
+      const result = await response.json().catch(() => null) as { processed?: number; remaining?: number; deadlinesRemaining?: number; deadlineFailures?: number; error?: string } | null;
       processed = result?.processed ?? 0;
       remaining = result?.remaining ?? null;
+      deadlinesRemaining = result?.deadlinesRemaining ?? null;
+      deadlineFailures = result?.deadlineFailures ?? 0;
       workerError = result?.error ?? (response.ok ? null : `Worker returned HTTP ${response.status}`);
     }
-    return NextResponse.json({ runId, workerStarted, processed, remaining, workerError });
+    return NextResponse.json({ runId, workerStarted, processed, remaining, deadlinesRemaining, deadlineFailures, workerError });
   } catch (error) {
     return NextResponse.json({ error: error instanceof Error ? error.message : "Unable to queue Moodle synchronization" }, { status: 400 });
   }
