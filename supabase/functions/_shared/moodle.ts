@@ -1,4 +1,4 @@
-import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
+import { createClient } from "jsr:@supabase/supabase-js@2";
 
 export type JsonObject = Record<string, unknown>;
 export type SyncCounts = { inserted: number; updated: number; unchanged: number; missing: number; skipped: number; failed: number };
@@ -77,80 +77,6 @@ export async function moodleCall<T>(baseUrl: string, token: string, fn: string, 
     await new Promise((resolve) => setTimeout(resolve, 200 * 2 ** attempt + Math.floor(Math.random() * 150)));
   }
   throw lastError ?? new Error("Moodle request failed");
-}
-
-const secret = /(token|authorization|cookie|secret|password|wstoken|sesskey|signature|credential)/i;
-const secretQuery = /^(token|access_token|wstoken|sesskey|signature|sig|key|secret|authorization)$/i;
-
-function sanitizeUrl(value: string): string {
-  if (!/^https?:\/\//i.test(value)) return value;
-  try {
-    const url = new URL(value);
-    for (const key of [...url.searchParams.keys()]) {
-      if (secretQuery.test(key)) url.searchParams.set(key, "[redacted]");
-    }
-    return url.toString();
-  } catch {
-    return value;
-  }
-}
-
-export function sanitize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sanitize);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as JsonObject).map(([key, child]) => [key, secret.test(key) ? "[redacted]" : sanitize(child)]));
-  return typeof value === "string" ? sanitizeUrl(value) : value;
-}
-
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as JsonObject).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, canonical(child)]));
-  return value;
-}
-
-export async function hashPayload(value: unknown): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify(canonical(sanitize(value)))));
-  return [...new Uint8Array(digest)].map((value) => value.toString(16).padStart(2, "0")).join("");
-}
-
-export async function upsertRaw(client: SupabaseClient, args: {
-  ownerId: string; connectionId: string; runId: string; objectType: string; externalId: string;
-  externalCourseId?: string | null; payload: unknown;
-}, counts: SyncCounts): Promise<string> {
-  const payload = sanitize(args.payload);
-  const contentHash = await hashPayload(payload);
-  const { data: existing } = await client.from("raw_source_records").select("id,content_hash")
-    .eq("connection_id", args.connectionId).eq("object_type", args.objectType).eq("external_id", args.externalId).maybeSingle();
-  const now = new Date().toISOString();
-  const { data, error } = await client.from("raw_source_records").upsert({
-    owner_id: args.ownerId, connection_id: args.connectionId, provider: "moodle", object_type: args.objectType,
-    external_id: args.externalId, external_course_id: args.externalCourseId ?? null, payload, content_hash: contentHash,
-    upstream_state: "present", last_seen_at: now, fetched_at: now, last_seen_run_id: args.runId,
-    missing_since: null, deleted_at: null,
-  }, { onConflict: "connection_id,object_type,external_id" }).select("id").single();
-  if (error) throw error;
-  if (!existing) counts.inserted += 1;
-  else if (existing.content_hash === contentHash) counts.unchanged += 1;
-  else counts.updated += 1;
-  if (!existing || existing.content_hash !== contentHash) {
-    const { error: versionError } = await client.from("raw_source_record_versions").upsert({
-      owner_id: args.ownerId, raw_source_record_id: data.id, sync_run_id: args.runId, content_hash: contentHash, payload,
-    }, { onConflict: "raw_source_record_id,content_hash" });
-    if (versionError) throw versionError;
-  }
-  return data.id as string;
-}
-
-export async function sourceTarget(client: SupabaseClient, args: {
-  ownerId: string; connectionId: string; objectType: string; externalId: string; externalCourseId?: string | null;
-  rawId: string; targetColumn: string; targetId: string;
-}) {
-  const row: JsonObject = {
-    owner_id: args.ownerId, connection_id: args.connectionId, provider: "moodle", object_type: args.objectType,
-    external_id: args.externalId, external_course_id: args.externalCourseId ?? null, raw_source_record_id: args.rawId,
-    relationship_kind: "authoritative", [args.targetColumn]: args.targetId,
-  };
-  const { error } = await client.from("source_references").upsert(row, { onConflict: "connection_id,object_type,external_id" });
-  if (error) throw error;
 }
 
 export function text(value: unknown, fallback = ""): string {

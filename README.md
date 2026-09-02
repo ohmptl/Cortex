@@ -1,24 +1,28 @@
 # Cortex
 
-Cortex is a private, single-user academic data platform. Moodle data is retained as sanitized raw source records and projected into a provider-neutral relational model used by both the editorial web interface and remote MCP server.
+Cortex is a private academic context platform built around persistent student state, live provider-owned course content, and durable academic knowledge.
 
 ```text
-Moodle → raw records + versions → normalized academic domain → UI + MCP
+Moodle sync → student state ─┐
+Moodle live → course content ├→ Cortex UI + MCP
+Panopto sync → knowledge ────┘
 ```
 
-## What V2 includes
+## What Cortex includes
 
 - Automatic Moodle course creation using stable Moodle course IDs
 - Capability discovery from the connected token's real web-service allowlist
-- Course sections/modules and action-event-first workload discovery
+- Action-event and activity workload discovery without a course-content mirror
 - Activity-specific typing and optional assignment, quiz, completion, submission, and grade enrichment
-- Raw record provenance, content hashes, version history, missing-upstream state, and observable sync runs
+- Typed student-state history, stable provider references, missing-upstream state, and observable sync runs
 - Relational grade categories/items with authoritative course/category association
-- User-owned overrides, notes, tags, completion state, and review items
-- Editorial Today, Calendar, Course, gradebook, diagnostics, and raw-source views
+- Immutable provider grades plus user-owned grade models, overrides, notes, tags, completion, and reviews
+- Live Moodle announcements, modules, resources, files, and bounded document reading
+- Panopto OAuth, explicit folder mappings, canonical transcripts, deterministic segments, and lexical retrieval
+- Editorial Today, Calendar, Course, gradebook, lecture, and diagnostics views
 - OAuth-protected remote MCP read and safe-write tools
 
-Inherited provider scraping, fuzzy duplicate resolution, syllabus parsing, gamification/statistics, page-load synchronization, and the duplicated workflow have been removed. `panopto_summarizer/` remains unchanged for the later lecture phase.
+Moodle mirror tables, raw provider payload archives, fuzzy identity matching, page-load synchronization, mandatory LLM enrichment, and token-bearing provider URLs are intentionally excluded.
 
 ## Stack
 
@@ -31,12 +35,12 @@ Inherited provider scraping, fuzzy duplicate resolution, syllabus parsing, gamif
 
 1. Copy `.env.example` to `.env.local` and fill in the local Supabase values.
 2. Install packages with `npm install`.
-3. Apply the destructive V2 migrations with `supabase db reset` for local development, or `supabase migration up` against the intended disposable database.
+3. Apply the destructive migrations with `supabase db reset` for local development, or `supabase migration up` against the intended database.
 4. Deploy `moodle-sync-dispatch` and `moodle-sync-worker` and configure their secrets.
 5. Create the single Supabase Auth user, then run `npm run dev`.
-6. Open `/settings/integrations/moodle`, connect the Moodle token, and run the first sync.
+6. Connect Moodle and run the first student-state sync. Configure Panopto OAuth, connect it from Settings, explicitly map folders, then run `npm run sync:panopto -- <course-uuid>`.
 
-The Moodle token and service-role key remain server-side. Tokens are submitted in POST bodies, encrypted with a 32-byte AES-GCM key, and stripped from raw payloads and diagnostics.
+Provider credentials and the service-role key remain server-side and encrypted with a 32-byte AES-GCM key. Provider tokens, authenticated file URLs, transcript bodies, and announcement bodies are excluded from diagnostics.
 
 ## Checks
 

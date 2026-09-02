@@ -6,9 +6,12 @@ import { createCortexMcpServer } from "../src/mcp/server.ts";
 import type { AcademicRepository } from "../src/domain/repository.ts";
 
 const expectedTools = [
-  "add_note", "add_tag", "clear_item_override", "create_manual_item", "get_academic_item", "get_calendar_range",
-  "get_course", "get_course_gradebook", "get_grade_item", "get_today", "get_upcoming", "list_academic_items",
-  "list_courses", "mark_item_complete", "schedule_review", "search_academic_context", "trigger_moodle_sync", "update_item_override",
+  "add_note","add_tag","archive_grade_model","archive_note","calculate_course_grade","clear_item_override","create_manual_item",
+  "get_academic_item","get_calendar_range","get_course","get_course_announcements","get_course_files","get_course_gradebook",
+  "get_course_modules","get_course_resources","get_grade_item","get_grade_model","get_lecture","get_lecture_transcript","get_today",
+  "get_upcoming","list_academic_items","list_course_lectures","list_courses","list_grade_models","list_notes","mark_item_complete",
+  "read_course_file","schedule_review","search_academic_context","search_lecture_transcripts","trigger_moodle_sync","update_item_override",
+  "update_note","upsert_grade_model",
 ];
 
 async function connectedClient(repository: AcademicRepository) {

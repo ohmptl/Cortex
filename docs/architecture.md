@@ -1,29 +1,40 @@
-# Cortex V2 architecture
+# Cortex three-domain architecture
+
+> **Supabase is not a Moodle cache. Cortex persists student state and durable academic knowledge. Provider-owned instructional content remains provider-owned and is retrieved live.**
+
+## Ownership
+
+| Persistent student state | Live Moodle content | Persistent academic knowledge |
+| --- | --- | --- |
+| Courses/enrollments | Announcements and general forums | Panopto lectures |
+| Actionable academic items | Sections and module lists | Canonical raw transcripts |
+| Deadlines and availability | Pages, books, and URLs | Timestamped transcript segments |
+| Submission and completion | PDFs, slides, and documents | PostgreSQL retrieval indexes |
+| Provider grades and structure | Syllabus/static instructor material | User and assistant notes |
+| Provider references and typed history | Reference files and handouts | Knowledge links |
+| Overrides, manual items, tags, reviews | | Optional derived insights |
+| Personal grade models | | |
 
 ## Data flow
 
-Moodle is a provider, not the Cortex domain. The Moodle worker first stores sanitized source objects in `raw_source_records` and content-addressed history in `raw_source_record_versions`. It then resolves stable identities through `source_references` and updates normalized courses, structure, academic items, completion/submission state, and gradebook rows.
+Moodle synchronization writes only student state. It may call `core_course_get_contents` transiently to resolve actionable activities and completion, but never stores course navigation or file/resource bodies. Live operations resolve a Cortex course through an owner-scoped `course_provider_links` row, decrypt the Moodle token for that operation, normalize the result, and discard provider payloads after a five-minute in-process cache expires.
 
-Provider payloads never write `field_overrides`. Effective views distinguish imported source values from deliberate Cortex edits. A due-date override therefore survives every later Moodle update.
+Provider grade rows are immutable provider truth. `grade_models`, category rules, and item rules hold Cortex-owned interpretation, exclusions, corrected weights, and hypothetical scores. Calculations never update provider rows.
 
-## Identity rules
+Panopto is an ingestion provider because transcripts are durable academic memory. Delegated OAuth tokens are encrypted in `provider_credentials`; folder links are explicit. New or changed transcripts are retained canonically and deterministically segmented at caption boundaries. Unchanged content hashes skip reprocessing. Video is never downloaded.
 
-- Courses: Moodle course ID.
-- Structure: Moodle section and course-module IDs.
-- Activities: module type plus module instance ID, with course-module ID as fallback.
-- Standalone events: Moodle calendar event ID.
-- Grades: Moodle grade category/item IDs within the authoritative Moodle course.
+## Identity and provenance
 
-Names are display data and never normal synchronization keys. Unknown grade categories remain null.
+- Moodle courses: connection plus Moodle course ID.
+- Academic work: connection plus semantic provider item ID, retaining course/module/instance IDs.
+- Grades: connection plus Moodle category/item ID.
+- Panopto: connection plus session ID; course folders are explicit links.
+- Transcript segments: stable cue time range, with deterministic ordinal/text fallback for untimed sources.
 
-## Synchronization
+Names are display data, not identity keys. Returned Moodle file references are opaque hashes; callers never submit or receive authenticated provider URLs. Notes can cite a provider object, credential-free URL, lecture segment, and timestamp.
 
-`moodle-sync-dispatch` creates scheduled runs. `moodle-sync-worker` transactionally claims one bounded task, heartbeats the run, and atomically records counters. Bootstrap and enrolled courses are mandatory; optional endpoint failures are retained as failed steps and yield a partial run.
+## Failure and security boundary
 
-Missing state is applied only after a successful authoritative collection phase. Raw and normalized records are retained rather than immediately deleted.
+Live provider failures use explicit capability, access, authentication, timeout, availability, response, and mapping codes. A failed live request does not affect persistent dashboards, deadlines, grades, or knowledge. Credentials are decrypted only server-side, token-shaped URL parameters are removed from responses, downloads are restricted to the configured provider origin, and every operation verifies owner/course linkage.
 
-The UI and MCP server share `AcademicRepository` and `AcademicService`. Next.js Server Components access these directly; they do not call internal HTTP routes.
-
-## Panopto boundary
-
-`panopto_summarizer/` remains standalone. A future migration will add lectures, complete transcripts, timestamped chunks, versioned structured summaries, concepts, and optional embeddings. The complete original transcript—not only an LLM summary—will be retained.
+Transcript search currently combines PostgreSQL lexical ranking with neighboring segments. A semantic ranker can be added behind the retrieval interface later; canonical transcript storage does not depend on an embedding model or graph database.

@@ -1,3 +1,4 @@
+/* eslint-disable prefer-const */
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type {
   AcademicItem,
@@ -6,15 +7,16 @@ import type {
   AcademicSearchResult,
   Course,
   CourseDetail,
-  CourseModule,
-  CourseSection,
   GradeCategory,
+  GradeModel,
   GradeItem,
+  Lecture,
   MoodleConnectionStatus,
+  Note,
   ProviderCapability,
-  RawSourceRecord,
   SyncRun,
 } from "@/domain/types";
+import { calculateGrade,type CategoryRule,type ItemRule } from "./gradeCalculator.ts";
 
 type Row = Record<string, unknown>;
 
@@ -63,7 +65,7 @@ function mapItem(row: Row): AcademicItem {
   return {
     id: stringValue(row.id),
     courseId: nullableString(row.course_id),
-    moduleId: nullableString(row.module_id),
+    providerModuleId: nullableString(row.provider_module_id),
     origin: row.origin === "provider" ? "provider" : "manual",
     type: stringValue(row.effective_item_type ?? row.item_type, "other") as AcademicItemType,
     title: stringValue(row.effective_title ?? row.title),
@@ -139,36 +141,30 @@ export class AcademicRepository {
   async getCourseDetail(courseId: string): Promise<CourseDetail | null> {
     const course = await this.getCourse(courseId);
     if (!course) return null;
-    const [sectionsResult, modulesResult, items, categoriesResult, gradesResult] = await Promise.all([
-      this.client.from("course_sections").select("*").eq("owner_id", this.ownerId).eq("course_id", courseId).order("position"),
-      this.client.from("course_modules").select("*").eq("owner_id", this.ownerId).eq("course_id", courseId).order("position"),
+    const [items, categoriesResult, gradesResult,lecturesResult,notesResult,modelsResult] = await Promise.all([
       this.listAcademicItems({ courseId, includeMissing: true }),
       this.client.from("grade_categories").select("*").eq("owner_id", this.ownerId).eq("course_id", courseId).order("position"),
       this.client.from("grade_items").select("*").eq("owner_id", this.ownerId).eq("course_id", courseId).order("position"),
+      this.client.from("lectures").select("*").eq("owner_id",this.ownerId).eq("course_id",courseId).order("recorded_at",{ascending:false}),
+      this.client.from("notes").select("*").eq("owner_id",this.ownerId).eq("course_id",courseId).is("archived_at",null).order("created_at",{ascending:false}),
+      this.client.from("grade_models").select("*").eq("owner_id",this.ownerId).eq("course_id",courseId).is("archived_at",null).order("created_at"),
     ]);
-    [sectionsResult.error, modulesResult.error, categoriesResult.error, gradesResult.error].forEach(throwIfError);
-
-    const sections: CourseSection[] = ((sectionsResult.data ?? []) as Row[]).map((row) => ({
-      id: stringValue(row.id), courseId: stringValue(row.course_id), number: nullableNumber(row.section_number),
-      position: numberValue(row.position), name: stringValue(row.name), summary: nullableString(row.summary), visible: row.visible !== false,
-    }));
-    const modules: CourseModule[] = ((modulesResult.data ?? []) as Row[]).map((row) => ({
-      id: stringValue(row.id), courseId: stringValue(row.course_id), sectionId: nullableString(row.section_id),
-      moduleType: stringValue(row.module_type), title: stringValue(row.title), description: nullableString(row.description),
-      url: nullableString(row.url), position: numberValue(row.position), visible: row.visible !== false,
-    }));
+    [categoriesResult.error, gradesResult.error,lecturesResult.error,notesResult.error,modelsResult.error].forEach(throwIfError);
     const categories: GradeCategory[] = ((categoriesResult.data ?? []) as Row[]).map((row) => ({
       id: stringValue(row.id), courseId: stringValue(row.course_id), parentCategoryId: nullableString(row.parent_category_id),
-      name: stringValue(row.name), weight: nullableNumber(row.weight), minimumScore: nullableNumber(row.minimum_score),
+      name: stringValue(row.name), aggregation:nullableString(row.aggregation),weight: nullableNumber(row.weight), minimumScore: nullableNumber(row.minimum_score),
       maximumScore: nullableNumber(row.maximum_score), position: numberValue(row.position),
     }));
     const grades: GradeItem[] = ((gradesResult.data ?? []) as Row[]).map((row) => ({
       id: stringValue(row.id), courseId: stringValue(row.course_id), categoryId: nullableString(row.category_id),
       academicItemId: nullableString(row.academic_item_id), name: stringValue(row.name), score: nullableNumber(row.score),
-      maximumScore: nullableNumber(row.maximum_score), percentage: nullableNumber(row.percentage),
+      maximumScore: nullableNumber(row.maximum_score), percentage: nullableNumber(row.percentage),weight:nullableNumber(row.weight),
       feedback: nullableString(row.feedback), hidden: row.hidden === true, position: numberValue(row.position),
     }));
-    return { course, sections, modules, items, categories, grades };
+    const lectures=((lecturesResult.data??[]) as Row[]).map(mapLecture);
+    const notes=((notesResult.data??[]) as Row[]).map(mapNote);
+    const gradeModels=((modelsResult.data??[]) as Row[]).map(mapGradeModel);
+    return { course, items, categories, grades,lectures,notes,gradeModels };
   }
 
   async getGradeItem(gradeItemId: string): Promise<GradeItem | null> {
@@ -179,7 +175,7 @@ export class AcademicRepository {
     return {
       id: stringValue(row.id), courseId: stringValue(row.course_id), categoryId: nullableString(row.category_id),
       academicItemId: nullableString(row.academic_item_id), name: stringValue(row.name), score: nullableNumber(row.score),
-      maximumScore: nullableNumber(row.maximum_score), percentage: nullableNumber(row.percentage),
+      maximumScore: nullableNumber(row.maximum_score), percentage: nullableNumber(row.percentage),weight:nullableNumber(row.weight),
       feedback: nullableString(row.feedback), hidden: row.hidden === true, position: numberValue(row.position),
     };
   }
@@ -220,17 +216,6 @@ export class AcademicRepository {
     }));
   }
 
-  async listRawSourceRecords(connectionId: string, limit = 100): Promise<RawSourceRecord[]> {
-    const { data, error } = await this.client.from("raw_source_records").select("id,object_type,external_id,external_course_id,upstream_state,fetched_at,payload")
-      .eq("owner_id", this.ownerId).eq("connection_id", connectionId).order("fetched_at", { ascending: false }).limit(Math.min(limit, 250));
-    throwIfError(error);
-    return ((data ?? []) as Row[]).map((row) => ({
-      id: stringValue(row.id), objectType: stringValue(row.object_type), externalId: stringValue(row.external_id),
-      externalCourseId: nullableString(row.external_course_id), upstreamState: stringValue(row.upstream_state) as RawSourceRecord["upstreamState"],
-      fetchedAt: stringValue(row.fetched_at), payload: row.payload,
-    }));
-  }
-
   async createManualItem(input: {
     courseId?: string | null; title: string; type: AcademicItemType; dueAt?: string | null; description?: string | null; url?: string | null;
   }): Promise<AcademicItem> {
@@ -262,13 +247,28 @@ export class AcademicRepository {
     throwIfError(error);
   }
 
-  async addNote(target: { courseId?: string; itemId?: string }, body: string): Promise<string> {
+  async addNote(target: { courseId?: string; itemId?: string;lectureId?:string }, body: string,options:{createdBy?:"user"|"assistant"|"system";sourceType?:string;sourceId?:string;sourceUrl?:string;sourceTimestampSeconds?:number}={}): Promise<string> {
     const { data, error } = await this.client.from("notes").insert({
-      owner_id: this.ownerId, course_id: target.courseId ?? null, academic_item_id: target.itemId ?? null, body,
+      owner_id: this.ownerId, course_id: target.courseId ?? null, academic_item_id: target.itemId ?? null,lecture_id:target.lectureId??null, body,
+      created_by:options.createdBy??"user",source_type:options.sourceType??null,source_id:options.sourceId??null,source_url:options.sourceUrl??null,source_timestamp_seconds:options.sourceTimestampSeconds??null,
     }).select("id").single();
     throwIfError(error);
     return stringValue((data as Row).id);
   }
+
+  async listNotes(options:{courseId?:string;itemId?:string;lectureId?:string;includeArchived?:boolean}={}):Promise<Note[]>{let query=this.client.from("notes").select("*").eq("owner_id",this.ownerId);if(options.courseId)query=query.eq("course_id",options.courseId);if(options.itemId)query=query.eq("academic_item_id",options.itemId);if(options.lectureId)query=query.eq("lecture_id",options.lectureId);if(!options.includeArchived)query=query.is("archived_at",null);const{data,error}=await query.order("created_at",{ascending:false});throwIfError(error);return((data??[]) as Row[]).map(mapNote);}
+  async updateNote(noteId:string,body:string):Promise<void>{const{error}=await this.client.from("notes").update({body}).eq("owner_id",this.ownerId).eq("id",noteId);throwIfError(error);}
+  async archiveNote(noteId:string,archived=true):Promise<void>{const{error}=await this.client.from("notes").update({archived_at:archived?new Date().toISOString():null}).eq("owner_id",this.ownerId).eq("id",noteId);throwIfError(error);}
+
+  async listCourseLectures(courseId:string,from?:string,to?:string):Promise<Lecture[]>{let query=this.client.from("lectures").select("*").eq("owner_id",this.ownerId).eq("course_id",courseId);if(from)query=query.gte("recorded_at",from);if(to)query=query.lte("recorded_at",to);const{data,error}=await query.order("recorded_at",{ascending:false});throwIfError(error);return((data??[]) as Row[]).map(mapLecture);}
+  async getLecture(lectureId:string){const{data,error}=await this.client.from("lectures").select("*").eq("owner_id",this.ownerId).eq("id",lectureId).maybeSingle();throwIfError(error);if(!data)return null;const{data:segments,error:segmentError}=await this.client.from("lecture_segments").select("text").eq("owner_id",this.ownerId).eq("lecture_id",lectureId).order("ordinal").limit(1);throwIfError(segmentError);return{...mapLecture(data as Row),preview:segments?.[0]?.text?.slice(0,500)??null};}
+  async getLectureTranscript(lectureId:string,options:{fromOrdinal?:number;toOrdinal?:number;fromSeconds?:number;toSeconds?:number;limit?:number}={}){let query=this.client.from("lecture_segments").select("*").eq("owner_id",this.ownerId).eq("lecture_id",lectureId);if(options.fromOrdinal!==undefined)query=query.gte("ordinal",options.fromOrdinal);if(options.toOrdinal!==undefined)query=query.lte("ordinal",options.toOrdinal);if(options.fromSeconds!==undefined)query=query.gte("end_seconds",options.fromSeconds);if(options.toSeconds!==undefined)query=query.lte("start_seconds",options.toSeconds);const{data,error}=await query.order("ordinal").limit(Math.min(options.limit??20,100));throwIfError(error);return((data??[]) as Row[]).map((row)=>({id:stringValue(row.id),lectureId:stringValue(row.lecture_id),ordinal:numberValue(row.ordinal),startSeconds:nullableNumber(row.start_seconds),endSeconds:nullableNumber(row.end_seconds),text:stringValue(row.text)}));}
+  async searchLectureTranscripts(input:{query:string;courseId?:string;lectureId?:string;from?:string;to?:string;limit?:number}){const{data,error}=await this.client.rpc("search_lecture_transcripts",{query_text:input.query,course_filter:input.courseId??null,lecture_filter:input.lectureId??null,from_date:input.from??null,to_date:input.to??null,result_limit:input.limit??8});throwIfError(error);return data??[];}
+
+  async listGradeModels(courseId:string):Promise<GradeModel[]>{const{data,error}=await this.client.from("grade_models").select("*").eq("owner_id",this.ownerId).eq("course_id",courseId).is("archived_at",null).order("created_at");throwIfError(error);return((data??[]) as Row[]).map(mapGradeModel);}
+  async upsertGradeModel(input:{id?:string;courseId:string;name:string;isDefault?:boolean;ungradedPolicy?:"exclude"|"zero";categoryRules?:CategoryRule[];itemRules?:ItemRule[]}){if(input.isDefault)await this.client.from("grade_models").update({is_default:false}).eq("owner_id",this.ownerId).eq("course_id",input.courseId);const payload={owner_id:this.ownerId,course_id:input.courseId,name:input.name,is_default:input.isDefault??false,ungraded_policy:input.ungradedPolicy??"exclude"};const result=input.id?await this.client.from("grade_models").update(payload).eq("owner_id",this.ownerId).eq("id",input.id).select("*").single():await this.client.from("grade_models").insert(payload).select("*").single();throwIfError(result.error);const model=mapGradeModel(result.data as Row);if(input.categoryRules){await this.client.from("grade_model_category_rules").delete().eq("owner_id",this.ownerId).eq("model_id",model.id);if(input.categoryRules.length)throwIfError((await this.client.from("grade_model_category_rules").insert(input.categoryRules.map((rule)=>({owner_id:this.ownerId,model_id:model.id,grade_category_id:rule.gradeCategoryId,excluded:rule.excluded,weight_override:rule.weightOverride})))).error);}if(input.itemRules){await this.client.from("grade_model_item_rules").delete().eq("owner_id",this.ownerId).eq("model_id",model.id);if(input.itemRules.length)throwIfError((await this.client.from("grade_model_item_rules").insert(input.itemRules.map((rule)=>({owner_id:this.ownerId,model_id:model.id,grade_item_id:rule.gradeItemId,excluded:rule.excluded,score_override:rule.scoreOverride,maximum_score_override:rule.maximumScoreOverride})))).error);}return model;}
+  async archiveGradeModel(modelId:string){const{error}=await this.client.from("grade_models").update({archived_at:new Date().toISOString(),is_default:false}).eq("owner_id",this.ownerId).eq("id",modelId);throwIfError(error);}
+  async calculateCourseGrade(courseId:string,modelId?:string,targetPercentage?:number){const detail=await this.getCourseDetail(courseId);if(!detail)throw new Error("Course not found");let model=modelId?detail.gradeModels.find((candidate)=>candidate.id===modelId):detail.gradeModels.find((candidate)=>candidate.isDefault);let categoryRules:CategoryRule[]=[],itemRules:ItemRule[]=[];if(model){const[categoryResult,itemResult]=await Promise.all([this.client.from("grade_model_category_rules").select("*").eq("owner_id",this.ownerId).eq("model_id",model.id),this.client.from("grade_model_item_rules").select("*").eq("owner_id",this.ownerId).eq("model_id",model.id)]);throwIfError(categoryResult.error);throwIfError(itemResult.error);categoryRules=((categoryResult.data??[]) as Row[]).map((row)=>({gradeCategoryId:stringValue(row.grade_category_id),excluded:row.excluded===true,weightOverride:nullableNumber(row.weight_override)}));itemRules=((itemResult.data??[]) as Row[]).map((row)=>({gradeItemId:stringValue(row.grade_item_id),excluded:row.excluded===true,scoreOverride:nullableNumber(row.score_override),maximumScoreOverride:nullableNumber(row.maximum_score_override)}));}return{course:detail.course,model:model??null,result:calculateGrade({categories:detail.categories,items:detail.grades,model,categoryRules,itemRules,targetPercentage})};}
 
   async addTag(itemId: string, name: string, color?: string): Promise<void> {
     const { data, error } = await this.client.from("tags").upsert(
@@ -310,3 +310,7 @@ export class AcademicRepository {
     }));
   }
 }
+
+function mapLecture(row:Row):Lecture{return{id:stringValue(row.id),courseId:stringValue(row.course_id),title:stringValue(row.title),recordedAt:nullableString(row.recorded_at),durationSeconds:nullableNumber(row.duration_seconds),instructor:nullableString(row.instructor),providerUrl:nullableString(row.provider_url),transcriptStatus:stringValue(row.transcript_status,"pending") as Lecture["transcriptStatus"],transcriptLanguage:nullableString(row.transcript_language)};}
+function mapNote(row:Row):Note{return{id:stringValue(row.id),courseId:nullableString(row.course_id),academicItemId:nullableString(row.academic_item_id),lectureId:nullableString(row.lecture_id),body:stringValue(row.body),createdBy:stringValue(row.created_by,"user") as Note["createdBy"],sourceType:nullableString(row.source_type),sourceId:nullableString(row.source_id),sourceUrl:nullableString(row.source_url),sourceTimestampSeconds:nullableNumber(row.source_timestamp_seconds),archivedAt:nullableString(row.archived_at),createdAt:stringValue(row.created_at),updatedAt:stringValue(row.updated_at)};}
+function mapGradeModel(row:Row):GradeModel{return{id:stringValue(row.id),courseId:stringValue(row.course_id),name:stringValue(row.name),isDefault:row.is_default===true,ungradedPolicy:stringValue(row.ungraded_policy,"exclude") as GradeModel["ungradedPolicy"],archivedAt:nullableString(row.archived_at)};}

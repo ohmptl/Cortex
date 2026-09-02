@@ -221,7 +221,7 @@ class PanoptoClient:
             
             # Extract the ASPXAUTH cookie from the Set-Cookie header
             set_cookie_header = response.headers.get('Set-Cookie', '')
-            logger.info(f"Set-Cookie header: {set_cookie_header[:100]}...")
+            logger.info("Panopto legacy login returned a cookie header")
             
             # Parse the ASPXAUTH cookie value
             asp_cookie = None
@@ -235,7 +235,7 @@ class PanoptoClient:
                 logger.error("Could not find ASPXAUTH cookie in response headers")
                 return None
             
-            logger.info(f"Successfully extracted ASPXAUTH cookie: {asp_cookie[:50]}...")
+            logger.info("Successfully established a legacy Panopto session")
             return asp_cookie
             
         except Exception as e:

@@ -1,4 +1,6 @@
-# Panopto Lecture Summarizer
+# Deprecated Panopto Lecture Summarizer
+
+> This standalone local-token/Gemini workflow is retained only as migration history and is not part of Cortex runtime. Use the server-side delegated OAuth provider, explicit course-folder mapping, and `npm run sync:panopto` ingestion path. Do not deploy or extend this legacy script.
 
 A Python script that fetches lecture captions from Panopto and generates AI-powered summaries using Google Gemini.
 

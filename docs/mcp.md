@@ -70,6 +70,9 @@ Read tools:
 - `list_courses`, `get_course`
 - `list_academic_items`, `get_academic_item`, `get_calendar_range`
 - `get_course_gradebook`, `get_grade_item`
+- `get_course_announcements`, `get_course_modules`, `get_course_resources`, `get_course_files`, `read_course_file`
+- `list_course_lectures`, `get_lecture`, `get_lecture_transcript`, `search_lecture_transcripts`
+- `list_notes`, `list_grade_models`, `get_grade_model`, `calculate_course_grade`
 - `search_academic_context`
 
 Safe write tools:
@@ -77,10 +80,11 @@ Safe write tools:
 - `create_manual_item`
 - `update_item_override`, `clear_item_override`
 - `mark_item_complete`
-- `add_note`, `add_tag`, `schedule_review`
+- `add_note`, `update_note`, `archive_note`, `add_tag`, `schedule_review`
+- `upsert_grade_model`, `archive_grade_model`
 - `trigger_moodle_sync`
 
-No tool can modify or delete `raw_source_records` or their version history. Updating a provider-derived field creates an override.
+No tool can mutate provider-derived grade or academic truth. Updating an effective field creates an override; personal grade interpretation is stored in separate grade-model rules. Live Moodle content and downloaded files are not persisted.
 
 ## Connect a client
 

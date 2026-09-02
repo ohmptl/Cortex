@@ -1,6 +1,15 @@
-export class MoodleApiError extends Error {
-  constructor(message: string, readonly code: string, readonly retryable = false) {
-    super(message);
+import { ProviderError, redactSecrets } from "../errors.ts";
+
+export class MoodleApiError extends ProviderError {
+  constructor(message: string, code: string, retryable = false) {
+    const normalized = code === "timeout" ? "PROVIDER_TIMEOUT"
+      : code === "invalidtoken" ? "PROVIDER_AUTH_INVALID"
+      : code === "accessexception" || code === "nopermissions" ? "PROVIDER_ACCESS_DENIED"
+      : code === "invalidrecord" || code === "invalidparameter" ? "PROVIDER_RESPONSE_INVALID"
+      : code === "network_error" || code.startsWith("http_5") ? "PROVIDER_UNAVAILABLE"
+      : code === "invalidfunction" || code === "servicenotavailable" ? "PROVIDER_FUNCTION_UNAVAILABLE"
+      : "PROVIDER_UNAVAILABLE";
+    super(normalized, redactSecrets(message), retryable);
     this.name = "MoodleApiError";
   }
 }
@@ -38,9 +47,11 @@ function appendParameter(body: URLSearchParams, key: string, value: unknown): vo
 
 export class MoodleClient {
   readonly baseUrl: string;
+  private readonly token:string;private readonly timeoutMs:number;
 
-  constructor(baseUrl: string, private readonly token: string, private readonly timeoutMs = 20_000) {
+  constructor(baseUrl: string, token: string, timeoutMs = 20_000) {
     this.baseUrl = normalizeMoodleUrl(baseUrl);
+    this.token=token;this.timeoutMs=timeoutMs;
     if (!token.trim()) throw new Error("Moodle token is required");
   }
 
@@ -99,6 +110,38 @@ export class MoodleClient {
 
   courseContents(courseId: string) {
     return this.call<unknown[]>("core_course_get_contents", { courseid: courseId });
+  }
+
+  forums(courseId: string) {
+    return this.call<unknown[]>("mod_forum_get_forums_by_courses", { courseids: [courseId] });
+  }
+
+  forumDiscussions(forumId: string, perPage = 50) {
+    return this.call<Record<string, unknown>>("mod_forum_get_forum_discussions", { forumid: forumId, sortorder: -1, page: 0, perpage: Math.max(1,Math.min(perPage,50)) });
+  }
+
+  async downloadFile(fileUrl: string, maxBytes = 25 * 1024 * 1024): Promise<{ bytes: Uint8Array; contentType: string }> {
+    const url = new URL(fileUrl);
+    const base = new URL(this.baseUrl);
+    if (url.origin !== base.origin || !url.pathname.includes("pluginfile.php")) {
+      throw new ProviderError("FILE_REFERENCE_INVALID", "Moodle file URL is outside the configured provider");
+    }
+    url.searchParams.set("token", this.token);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      const response = await fetch(url, { signal: controller.signal, cache: "no-store", redirect: "error" });
+      if (!response.ok) throw new MoodleApiError(`Moodle file request returned HTTP ${response.status}`, `http_${response.status}`);
+      const declared = Number(response.headers.get("content-length") ?? 0);
+      if (declared > maxBytes) throw new ProviderError("FILE_TOO_LARGE", `File exceeds the ${maxBytes} byte limit`);
+      const bytes = new Uint8Array(await response.arrayBuffer());
+      if (bytes.byteLength > maxBytes) throw new ProviderError("FILE_TOO_LARGE", `File exceeds the ${maxBytes} byte limit`);
+      return { bytes, contentType: response.headers.get("content-type")?.split(";")[0] ?? "application/octet-stream" };
+    } catch (error) {
+      if (error instanceof ProviderError) throw error;
+      if (error instanceof Error && error.name === "AbortError") throw new ProviderError("PROVIDER_TIMEOUT", "Moodle file request timed out", true);
+      throw new ProviderError("PROVIDER_UNAVAILABLE", "Unable to retrieve the Moodle file", true);
+    } finally { clearTimeout(timeout); }
   }
 
   actionEventsByTimesort(afterEventId = 0, limit = 50) {

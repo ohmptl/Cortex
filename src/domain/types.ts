@@ -35,7 +35,7 @@ export interface Course {
 export interface AcademicItem {
   id: string;
   courseId: string | null;
-  moduleId: string | null;
+  providerModuleId: string | null;
   origin: "manual" | "provider";
   type: AcademicItemType;
   title: string;
@@ -57,33 +57,12 @@ export interface AcademicItem {
   course?: Course;
 }
 
-export interface CourseSection {
-  id: string;
-  courseId: string;
-  number: number | null;
-  position: number;
-  name: string;
-  summary: string | null;
-  visible: boolean;
-}
-
-export interface CourseModule {
-  id: string;
-  courseId: string;
-  sectionId: string | null;
-  moduleType: string;
-  title: string;
-  description: string | null;
-  url: string | null;
-  position: number;
-  visible: boolean;
-}
-
 export interface GradeCategory {
   id: string;
   courseId: string;
   parentCategoryId: string | null;
   name: string;
+  aggregation: string | null;
   weight: number | null;
   minimumScore: number | null;
   maximumScore: number | null;
@@ -99,6 +78,7 @@ export interface GradeItem {
   score: number | null;
   maximumScore: number | null;
   percentage: number | null;
+  weight: number | null;
   feedback: string | null;
   hidden: boolean;
   position: number;
@@ -138,15 +118,16 @@ export interface MoodleConnectionStatus {
 
 export interface CourseDetail {
   course: Course;
-  sections: CourseSection[];
-  modules: CourseModule[];
   items: AcademicItem[];
   categories: GradeCategory[];
   grades: GradeItem[];
+  lectures: Lecture[];
+  notes: Note[];
+  gradeModels: GradeModel[];
 }
 
 export interface AcademicSearchResult {
-  kind: "course" | "item" | "module" | "note";
+  kind: "course" | "item" | "note" | "lecture_segment";
   id: string;
   courseId: string | null;
   title: string;
@@ -154,12 +135,7 @@ export interface AcademicSearchResult {
   rank: number;
 }
 
-export interface RawSourceRecord {
-  id: string;
-  objectType: string;
-  externalId: string;
-  externalCourseId: string | null;
-  upstreamState: "present" | "missing" | "deleted";
-  fetchedAt: string;
-  payload: unknown;
-}
+export interface Lecture { id:string; courseId:string; title:string; recordedAt:string|null; durationSeconds:number|null; instructor:string|null; providerUrl:string|null; transcriptStatus:"pending"|"available"|"unavailable"|"error"; transcriptLanguage:string|null }
+export interface TranscriptSegment { id:string; lectureId:string; ordinal:number; startSeconds:number|null; endSeconds:number|null; text:string }
+export interface Note { id:string; courseId:string|null; academicItemId:string|null; lectureId:string|null; body:string; createdBy:"user"|"assistant"|"system"; sourceType:string|null; sourceId:string|null; sourceUrl:string|null; sourceTimestampSeconds:number|null; archivedAt:string|null; createdAt:string; updatedAt:string }
+export interface GradeModel { id:string; courseId:string; name:string; isDefault:boolean; ungradedPolicy:"exclude"|"zero"; archivedAt:string|null }

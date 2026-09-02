@@ -1,3 +1,4 @@
+/* Legacy Moodle mirror worker retained as commented migration context.
 import { adminClient, decryptCredential, emptyCounts, hasServiceRole, iso, moodleCall, sourceTarget, text, upsertRaw, type JsonObject, type SyncCounts } from "../_shared/moodle.ts";
 import { hasMoodleGradeResult, isMoodleActivityComplete } from "../_shared/completion.ts";
 
@@ -36,7 +37,7 @@ function eventModuleExternalId(event: JsonObject): string {
     try {
       const id = new URL(candidate).searchParams.get("id");
       if (id) return id;
-    } catch { /* A malformed optional URL cannot block workload ingestion. */ }
+    } catch { }
   }
   return "";
 }
@@ -629,3 +630,5 @@ Deno.serve(async (request) => {
     return Response.json({ processed: results.length, error: error instanceof Error ? error.message : "Worker batch failed", results }, { status: 500 });
   }
 });
+*/
+import "./v3.ts";

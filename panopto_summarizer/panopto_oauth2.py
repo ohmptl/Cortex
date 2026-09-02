@@ -243,7 +243,7 @@ class PanoptoOAuth2:
                     
                     if 'code' in params:
                         callback_code[0] = params['code'][0]
-                        logger.info(f"Authorization code received: {params['code'][0][:20]}...")
+                        logger.info("Authorization code received")
                         self.send_response(200)
                         self.send_header('Content-type', 'text/html')
                         self.end_headers()
@@ -332,7 +332,7 @@ class PanoptoOAuth2:
         )
         
         if response.status_code != 200:
-            logger.error(f"Token exchange failed: {response.status_code} - {response.text}")
+            logger.error(f"Token exchange failed with HTTP {response.status_code}")
             response.raise_for_status()
         
         token_response = response.json()
@@ -383,7 +383,7 @@ class PanoptoOAuth2:
             )
             
             if response.status_code != 200:
-                logger.warning(f"Token refresh failed: {response.status_code} - {response.text}")
+                logger.warning(f"Token refresh failed with HTTP {response.status_code}")
                 return False
             
             token_response = response.json()
@@ -480,7 +480,7 @@ class PanoptoOAuth2:
                 return self.access_token
                 
             else:
-                error_msg = f"Client Credentials authentication failed: {response.status_code} {response.text}"
+                error_msg = f"Client Credentials authentication failed with HTTP {response.status_code}"
                 logger.error(error_msg)
                 raise Exception(error_msg)
                 

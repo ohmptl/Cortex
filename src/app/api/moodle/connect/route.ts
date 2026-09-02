@@ -4,7 +4,6 @@ import { createClient } from "@/lib/supabase/server";
 import { createAdminClient } from "@/lib/supabase/admin";
 import { encryptCredential } from "@/lib/crypto";
 import { buildCapabilityDiagnostics } from "@/providers/moodle/capabilities";
-import { contentHash, sanitizeMoodlePayload } from "@/providers/moodle/sanitize";
 import { normalizeMoodleUrl, verifyMoodleToken } from "@/providers/moodle/client";
 
 const inputSchema = z.object({ url: z.url(), token: z.string().trim().min(1).max(4096) }).strict();
@@ -42,22 +41,5 @@ export async function POST(request: Request) {
     diagnostic_group: capability.group, desired: capability.desired, available: capability.available,
   })), { onConflict: "connection_id,capability_name" });
   if (capabilityError) return NextResponse.json({ error: capabilityError.message }, { status: 500 });
-  const sanitizedSiteInfo = sanitizeMoodlePayload(verified.info);
-  const hash = await contentHash(sanitizedSiteInfo);
-  const { data: raw, error: rawError } = await admin.from("raw_source_records").upsert({
-    owner_id: user.id, connection_id: connection.id, provider: "moodle", object_type: "site-info",
-    external_id: String(verified.info.userid), payload: sanitizedSiteInfo, content_hash: hash,
-  }, { onConflict: "connection_id,object_type,external_id" }).select("id").single();
-  if (rawError) {
-    await admin.from("provider_connections").update({ status: "error" }).eq("id", connection.id);
-    return NextResponse.json({ error: "Moodle connected, but its capability response could not be retained" }, { status: 500 });
-  }
-  const { error: versionError } = await admin.from("raw_source_record_versions").upsert({
-    owner_id: user.id, raw_source_record_id: raw.id, content_hash: hash, payload: sanitizedSiteInfo,
-  }, { onConflict: "raw_source_record_id,content_hash" });
-  if (versionError) {
-    await admin.from("provider_connections").update({ status: "error" }).eq("id", connection.id);
-    return NextResponse.json({ error: "Moodle connected, but its source history could not be retained" }, { status: 500 });
-  }
   return NextResponse.json({ success: true, connectionId: connection.id, siteName: verified.info.sitename ?? null, capabilityCount: diagnostics.filter((item) => item.available).length });
 }

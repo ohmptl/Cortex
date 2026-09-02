@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import { AcademicService, createManualItemSchema } from "../domain/service.ts";
 import type { AcademicRepository } from "../domain/repository.ts";
+import { MoodleLiveService } from "../providers/moodle/live.ts";
 
 const uuid = z.string().uuid();
 const dateTime = z.string().datetime({ offset: true });
@@ -17,6 +18,7 @@ function result(value: unknown) {
 
 export function createCortexMcpServer(repository: AcademicRepository) {
   const service = new AcademicService(repository);
+  const moodle = new MoodleLiveService(repository.ownerId);
   const server = new McpServer({ name: "cortex-academic", version: "2.0.0" });
 
   server.registerTool("get_today", {
@@ -35,7 +37,7 @@ export function createCortexMcpServer(repository: AcademicRepository) {
   }, async ({ activeOnly }) => result(await repository.listCourses(activeOnly)));
 
   server.registerTool("get_course", {
-    title: "Get course", description: "Get a course with sections, modules, academic items, and gradebook.",
+    title: "Get course", description: "Get persistent Cortex student state, gradebook, notes, and lectures for a course.",
     inputSchema: { courseId: uuid }, annotations: readAnnotations,
   }, async ({ courseId }) => {
     const course = await repository.getCourseDetail(courseId);
@@ -84,7 +86,7 @@ export function createCortexMcpServer(repository: AcademicRepository) {
   });
 
   server.registerTool("search_academic_context", {
-    title: "Search academic context", description: "Full-text search courses, academic items, modules, and Cortex notes.",
+    title: "Search academic context", description: "Full-text search persistent courses, academic items, notes, and lecture knowledge.",
     inputSchema: { query: z.string().trim().min(2).max(500), limit: z.number().int().min(1).max(100).default(20) },
     annotations: readAnnotations,
   }, async ({ query, limit }) => result(await repository.search(query, limit)));
@@ -119,14 +121,38 @@ export function createCortexMcpServer(repository: AcademicRepository) {
   });
 
   server.registerTool("add_note", {
-    title: "Add note", description: "Attach a Cortex-owned note to one course or academic item.",
+    title: "Add note", description: "Attach an explicit durable note to a course, academic item, or lecture.",
     inputSchema: {
-      targetType: z.enum(["course", "academic_item"]), targetId: uuid,
+      targetType: z.enum(["course", "academic_item","lecture"]), targetId: uuid,
       body: z.string().trim().min(1).max(50_000),
+      createdBy:z.enum(["user","assistant","system"]).default("user"),sourceType:z.string().max(100).optional(),sourceId:z.string().max(500).optional(),sourceUrl:z.string().url().optional(),sourceTimestampSeconds:z.number().nonnegative().optional(),
     }, annotations: { ...safeWriteAnnotations, idempotentHint: false },
-  }, async ({ targetType, targetId, body }) => result({ noteId: await repository.addNote(
-    targetType === "course" ? { courseId: targetId } : { itemId: targetId }, body,
+  }, async ({ targetType, targetId, body,...options }) => result({ noteId: await repository.addNote(
+    targetType === "course" ? { courseId: targetId } : targetType==="lecture"?{lectureId:targetId}:{ itemId: targetId }, body,options,
   ) }));
+
+  server.registerTool("list_notes",{title:"List notes",description:"List active durable Cortex notes for a course, item, or lecture.",inputSchema:{courseId:uuid.optional(),itemId:uuid.optional(),lectureId:uuid.optional(),includeArchived:z.boolean().default(false)},annotations:readAnnotations},async(input)=>result(await repository.listNotes(input)));
+  server.registerTool("update_note",{title:"Update note",description:"Update the body of a user-manageable Cortex note.",inputSchema:{noteId:uuid,body:z.string().trim().min(1).max(50_000)},annotations:safeWriteAnnotations},async({noteId,body})=>{await repository.updateNote(noteId,body);return result({noteId,updated:true});});
+  server.registerTool("archive_note",{title:"Archive note",description:"Archive or restore a Cortex note without hard deletion.",inputSchema:{noteId:uuid,archived:z.boolean().default(true)},annotations:safeWriteAnnotations},async({noteId,archived})=>{await repository.archiveNote(noteId,archived);return result({noteId,archived});});
+
+  server.registerTool("get_course_announcements",{title:"Get live course announcements",description:"Retrieve current announcements live from Moodle for a Cortex course UUID.",inputSchema:{courseId:uuid,limit:z.number().int().min(1).max(50).default(10)},annotations:{...readAnnotations,openWorldHint:true}},async({courseId,limit})=>result(await moodle.getCourseAnnouncements(courseId,limit)));
+  server.registerTool("get_course_modules",{title:"Get live course modules",description:"Retrieve current Moodle section and activity metadata without persisting it.",inputSchema:{courseId:uuid},annotations:{...readAnnotations,openWorldHint:true}},async({courseId})=>result(await moodle.getCourseModules(courseId)));
+  server.registerTool("get_course_resources",{title:"Get live course resources",description:"Retrieve current Moodle files, folders, pages, books, and URLs.",inputSchema:{courseId:uuid},annotations:{...readAnnotations,openWorldHint:true}},async({courseId})=>result(await moodle.getCourseResources(courseId)));
+  server.registerTool("get_course_files",{title:"Get live course files",description:"Discover current Moodle file metadata and safe opaque file references.",inputSchema:{courseId:uuid},annotations:{...readAnnotations,openWorldHint:true}},async({courseId})=>result((await moodle.getCourseFiles(courseId)).map((file)=>({fileRef:file.fileRef,filename:file.filename,mimeType:file.mimeType,size:file.size,modifiedAt:file.modifiedAt,moduleId:file.moduleId,moduleTitle:file.moduleTitle}))));
+  server.registerTool("read_course_file",{title:"Read course file",description:"Securely download and extract a Moodle file through Cortex without exposing credentials or persisting the file.",inputSchema:{courseId:uuid,fileRef:z.string().min(20).max(200),offset:z.number().int().nonnegative().default(0),maxCharacters:z.number().int().min(1).max(100_000).default(30_000)},annotations:{...readAnnotations,openWorldHint:true}},async({courseId,fileRef,offset,maxCharacters})=>result(await moodle.readCourseFile(courseId,fileRef,offset,maxCharacters)));
+
+  server.registerTool("list_course_lectures",{title:"List course lectures",description:"List persisted Panopto lecture metadata for a Cortex course.",inputSchema:{courseId:uuid,from:dateTime.optional(),to:dateTime.optional()},annotations:readAnnotations},async({courseId,from,to})=>result(await repository.listCourseLectures(courseId,from,to)));
+  server.registerTool("get_lecture",{title:"Get lecture",description:"Get lecture metadata, transcript status, and a bounded preview.",inputSchema:{lectureId:uuid},annotations:readAnnotations},async({lectureId})=>result(await repository.getLecture(lectureId)));
+  server.registerTool("get_lecture_transcript",{title:"Get lecture transcript segments",description:"Retrieve a bounded ordinal or timestamp range of transcript segments.",inputSchema:{lectureId:uuid,fromOrdinal:z.number().int().nonnegative().optional(),toOrdinal:z.number().int().nonnegative().optional(),fromSeconds:z.number().nonnegative().optional(),toSeconds:z.number().nonnegative().optional(),limit:z.number().int().min(1).max(100).default(20)},annotations:readAnnotations},async({lectureId,...options})=>result(await repository.getLectureTranscript(lectureId,options)));
+  server.registerTool("search_lecture_transcripts",{title:"Search lecture transcripts",description:"Search persistent timestamped lecture knowledge with cited neighboring context.",inputSchema:{query:z.string().trim().min(2).max(500),courseId:uuid.optional(),lectureId:uuid.optional(),from:dateTime.optional(),to:dateTime.optional(),limit:z.number().int().min(1).max(25).default(8)},annotations:readAnnotations},async(input)=>result(await repository.searchLectureTranscripts(input)));
+
+  const categoryRule=z.object({gradeCategoryId:uuid,excluded:z.boolean().default(false),weightOverride:z.number().nonnegative().nullable().default(null)});
+  const itemRule=z.object({gradeItemId:uuid,excluded:z.boolean().default(false),scoreOverride:z.number().nullable().default(null),maximumScoreOverride:z.number().positive().nullable().default(null)});
+  server.registerTool("list_grade_models",{title:"List personal grade models",description:"List Cortex-owned grade interpretations without changing provider grade truth.",inputSchema:{courseId:uuid},annotations:readAnnotations},async({courseId})=>result(await repository.listGradeModels(courseId)));
+  server.registerTool("get_grade_model",{title:"Get personal grade model",description:"Return a saved personal grade model and its current calculation.",inputSchema:{courseId:uuid,modelId:uuid},annotations:readAnnotations},async({courseId,modelId})=>result(await repository.calculateCourseGrade(courseId,modelId)));
+  server.registerTool("upsert_grade_model",{title:"Save personal grade model",description:"Create or update a separate personal grade model with category and item rules.",inputSchema:{id:uuid.optional(),courseId:uuid,name:z.string().trim().min(1).max(200),isDefault:z.boolean().default(false),ungradedPolicy:z.enum(["exclude","zero"]).default("exclude"),categoryRules:z.array(categoryRule).max(500).default([]),itemRules:z.array(itemRule).max(1000).default([])},annotations:safeWriteAnnotations},async(input)=>result(await repository.upsertGradeModel(input)));
+  server.registerTool("archive_grade_model",{title:"Archive personal grade model",description:"Archive a Cortex grade model without modifying Moodle grades.",inputSchema:{modelId:uuid},annotations:safeWriteAnnotations},async({modelId})=>{await repository.archiveGradeModel(modelId);return result({modelId,archived:true});});
+  server.registerTool("calculate_course_grade",{title:"Calculate personal course grade",description:"Calculate current and target grades from immutable provider truth plus an optional personal model.",inputSchema:{courseId:uuid,modelId:uuid.optional(),targetPercentage:z.number().min(0).max(100).optional()},annotations:readAnnotations},async({courseId,modelId,targetPercentage})=>result(await repository.calculateCourseGrade(courseId,modelId,targetPercentage)));
 
   server.registerTool("add_tag", {
     title: "Add tag", description: "Create or reuse a Cortex tag and attach it to an academic item.",

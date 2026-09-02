@@ -11,13 +11,20 @@
     "start": "next start",
     "lint": "eslint",
     "typecheck": "tsc --noEmit --incremental false",
-    "test": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.ts"
+    "test": "node --no-warnings=MODULE_TYPELESS_PACKAGE_JSON --experimental-strip-types --test tests/*.test.ts",
+    "check:moodle-live": "tsx scripts/check-moodle-live.ts",
+    "check:panopto-live": "tsx scripts/check-panopto-live.ts",
+    "sync:panopto": "tsx scripts/sync-panopto.ts"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
     "@supabase/ssr": "^0.12.5",
     "@supabase/supabase-js": "^2.112.4",
+    "fast-xml-parser": "^5.3.6",
+    "jszip": "^3.10.1",
+    "mammoth": "^1.11.0",
     "next": "16.3.2",
+    "pdfjs-dist": "^6.3.289",
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "zod": "^4.4.3"
@@ -30,6 +37,7 @@
     "eslint": "^9",
     "eslint-config-next": "16.3.2",
     "tailwindcss": "^4",
+    "tsx": "^4.21.0",
     "typescript": "^5"
   }
 }
