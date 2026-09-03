@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import { createAdminClient } from "../../lib/supabase/admin.ts";
 import { decryptCredential } from "../../lib/crypto.ts";
+import { extractDocumentText, paginateText } from "../../lib/document-extraction.ts";
+import { MAX_COURSE_FILE_BYTES } from "../../lib/file-limits.ts";
 import { liveResultCache } from "../cache.ts";
 import { ProviderError } from "../errors.ts";
 import { MoodleClient } from "./client.ts";
@@ -39,8 +41,10 @@ async function resolve(ownerId: string, courseId: string) {
   if (!credential || !key) throw new ProviderError("PROVIDER_AUTH_INVALID", "Moodle credentials are unavailable");
   const payload = await decryptCredential<{ token?: string }>(credential.encrypted_payload,key);
   if (!payload.token) throw new ProviderError("PROVIDER_AUTH_INVALID", "Moodle credential is invalid");
-  return { admin, connectionId: link.connection_id as string, providerCourseId: link.external_id as string, client: new MoodleClient(connection.base_url,payload.token) };
+  return { connectionId: link.connection_id as string, providerCourseId: link.external_id as string, client: new MoodleClient(connection.base_url,payload.token) };
 }
+
+type MoodleCourseResolver = (ownerId: string, courseId: string) => ReturnType<typeof resolve>;
 
 export function normalizeContents(contents: unknown[]): MoodleModule[] {
   const modules: MoodleModule[] = [];
@@ -67,10 +71,11 @@ export function normalizeContents(contents: unknown[]): MoodleModule[] {
 
 export class MoodleLiveService {
   private readonly ownerId:string;
-  constructor(ownerId: string) {this.ownerId=ownerId;}
+  private readonly resolveCourse:MoodleCourseResolver;
+  constructor(ownerId: string, resolveCourse: MoodleCourseResolver = resolve) {this.ownerId=ownerId;this.resolveCourse=resolveCourse;}
 
   async getCourseModules(courseId: string): Promise<MoodleModule[]> {
-    const provider = await resolve(this.ownerId,courseId);
+    const provider = await this.resolveCourse(this.ownerId,courseId);
     const key = `${this.ownerId}:${provider.connectionId}:${courseId}:modules`;
     const cached = liveResultCache.get<MoodleModule[]>(key); if (cached) return cached;
     return liveResultCache.set(key,normalizeContents(await provider.client.courseContents(provider.providerCourseId)));
@@ -85,7 +90,7 @@ export class MoodleLiveService {
   async getCourseFiles(courseId: string): Promise<MoodleFile[]> { return (await this.getCourseModules(courseId)).flatMap((module) => module.files); }
 
   async getCourseAnnouncements(courseId: string, limit = 10) {
-    const provider = await resolve(this.ownerId,courseId); const bounded=Math.max(1,Math.min(limit,50));
+    const provider = await this.resolveCourse(this.ownerId,courseId); const bounded=Math.max(1,Math.min(limit,50));
     const key=`${this.ownerId}:${provider.connectionId}:${courseId}:announcements:${bounded}`;
     const cached=liveResultCache.get<unknown>(key); if(cached) return cached;
     const forums=await provider.client.forums(provider.providerCourseId);
@@ -104,25 +109,13 @@ export class MoodleLiveService {
   }
 
   async readCourseFile(courseId:string,fileRef:string,offset=0,maxChars=30_000){
-    const provider=await resolve(this.ownerId,courseId); const files=await this.getCourseFiles(courseId);
+    const provider=await this.resolveCourse(this.ownerId,courseId);
+    const files=normalizeContents(await provider.client.courseContents(provider.providerCourseId)).flatMap((module)=>module.files);
     const file=files.find((candidate)=>candidate.fileRef===fileRef);
     if(!file?.providerUrl) throw new ProviderError("FILE_REFERENCE_INVALID","File reference is not valid for this course");
+    if(file.size!==null&&file.size>MAX_COURSE_FILE_BYTES) throw new ProviderError("FILE_TOO_LARGE",`File exceeds the ${MAX_COURSE_FILE_BYTES} byte limit`);
     const downloaded=await provider.client.downloadFile(file.providerUrl);
-    const extracted=await extractText(downloaded.bytes,file.mimeType??downloaded.contentType,file.filename);
-    const start=Math.max(0,offset); const size=Math.max(1,Math.min(maxChars,100_000)); const content=extracted.text.slice(start,start+size);
-    return { file:{...file,providerUrl:undefined},contentType:extracted.contentType,content,totalCharacters:extracted.text.length,
-      offset:start,returnedCharacters:content.length,truncated:start+content.length<extracted.text.length,nextOffset:start+content.length<extracted.text.length?start+content.length:null };
+    const extracted=await extractDocumentText(downloaded.bytes,file.mimeType??downloaded.contentType,file.filename);
+    return { file:{...file,providerUrl:undefined},contentType:extracted.contentType,...paginateText(extracted.text,offset,maxChars) };
   }
-}
-
-export async function extractText(bytes:Uint8Array,mimeType:string,filename:string):Promise<{text:string;contentType:string}>{
-  const mime=mimeType.toLowerCase();
-  if(mime.startsWith("text/")||/\.(txt|md|csv)$/i.test(filename)) return{text:new TextDecoder().decode(bytes),contentType:mimeType};
-  if(mime==="application/pdf"||/\.pdf$/i.test(filename)){
-    const pdfjs=await import("pdfjs-dist/legacy/build/pdf.mjs"); const doc=await pdfjs.getDocument({data:bytes}).promise; const pages:string[]=[];
-    for(let i=1;i<=doc.numPages;i++){const page=await doc.getPage(i);const content=await page.getTextContent();pages.push(`--- Page ${i} ---\n${content.items.map((item)=>"str" in item?item.str:"").join(" ")}`);} return{text:pages.join("\n\n"),contentType:"application/pdf"};
-  }
-  if(mime.includes("wordprocessingml")||/\.docx$/i.test(filename)){const mammoth=await import("mammoth");const out=await mammoth.extractRawText({buffer:Buffer.from(bytes)});return{text:out.value,contentType:"application/vnd.openxmlformats-officedocument.wordprocessingml.document"};}
-  if(mime.includes("presentationml")||/\.pptx$/i.test(filename)){const JSZip=(await import("jszip")).default;const {XMLParser}=await import("fast-xml-parser");const zip=await JSZip.loadAsync(bytes);const parser=new XMLParser({ignoreAttributes:false});const names=Object.keys(zip.files).filter((n)=>/^ppt\/slides\/slide\d+\.xml$/.test(n)).sort((a,b)=>num(a.match(/\d+/)?.[0])!-num(b.match(/\d+/)?.[0])!);const slides:string[]=[];for(const [index,name] of names.entries()){const parsed=parser.parse(await zip.file(name)!.async("text"));const values:string[]=[];const walk=(value:unknown)=>{if(typeof value==="string")values.push(value);else if(Array.isArray(value))value.forEach(walk);else if(value&&typeof value==="object")Object.entries(value).forEach(([k,v])=>{if(k==="a:t"&&typeof v==="string")values.push(v);else walk(v);});};walk(parsed);slides.push(`--- Slide ${index+1} ---\n${values.join(" ")}`);}return{text:slides.join("\n\n"),contentType:"application/vnd.openxmlformats-officedocument.presentationml.presentation"};}
-  throw new ProviderError("UNSUPPORTED_CONTENT_TYPE",`Unsupported file content type: ${mimeType||"unknown"}`);
 }

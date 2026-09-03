@@ -1,4 +1,5 @@
 import { ProviderError, redactSecrets } from "../errors.ts";
+import { MAX_COURSE_FILE_BYTES } from "../../lib/file-limits.ts";
 
 export class MoodleApiError extends ProviderError {
   constructor(message: string, code: string, retryable = false) {
@@ -120,10 +121,12 @@ export class MoodleClient {
     return this.call<Record<string, unknown>>("mod_forum_get_forum_discussions", { forumid: forumId, sortorder: -1, page: 0, perpage: Math.max(1,Math.min(perPage,50)) });
   }
 
-  async downloadFile(fileUrl: string, maxBytes = 25 * 1024 * 1024): Promise<{ bytes: Uint8Array; contentType: string }> {
+  async downloadFile(fileUrl: string, maxBytes = MAX_COURSE_FILE_BYTES): Promise<{ bytes: Uint8Array; contentType: string }> {
     const url = new URL(fileUrl);
     const base = new URL(this.baseUrl);
-    if (url.origin !== base.origin || !url.pathname.includes("pluginfile.php")) {
+    const basePath = base.pathname.replace(/\/$/, "");
+    const allowedPaths = [`${basePath}/webservice/pluginfile.php/`, `${basePath}/pluginfile.php/`];
+    if (url.origin !== base.origin || url.username || url.password || !allowedPaths.some((path) => url.pathname.startsWith(path))) {
       throw new ProviderError("FILE_REFERENCE_INVALID", "Moodle file URL is outside the configured provider");
     }
     url.searchParams.set("token", this.token);
@@ -134,8 +137,25 @@ export class MoodleClient {
       if (!response.ok) throw new MoodleApiError(`Moodle file request returned HTTP ${response.status}`, `http_${response.status}`);
       const declared = Number(response.headers.get("content-length") ?? 0);
       if (declared > maxBytes) throw new ProviderError("FILE_TOO_LARGE", `File exceeds the ${maxBytes} byte limit`);
-      const bytes = new Uint8Array(await response.arrayBuffer());
-      if (bytes.byteLength > maxBytes) throw new ProviderError("FILE_TOO_LARGE", `File exceeds the ${maxBytes} byte limit`);
+      const reader = response.body?.getReader();
+      const chunks: Uint8Array[] = [];
+      let total = 0;
+      if (reader) {
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          total += value.byteLength;
+          if (total > maxBytes) {
+            controller.abort();
+            await reader.cancel();
+            throw new ProviderError("FILE_TOO_LARGE", `File exceeds the ${maxBytes} byte limit`);
+          }
+          chunks.push(value);
+        }
+      }
+      const bytes = new Uint8Array(total);
+      let position = 0;
+      for (const chunk of chunks) { bytes.set(chunk, position); position += chunk.byteLength; }
       return { bytes, contentType: response.headers.get("content-type")?.split(";")[0] ?? "application/octet-stream" };
     } catch (error) {
       if (error instanceof ProviderError) throw error;

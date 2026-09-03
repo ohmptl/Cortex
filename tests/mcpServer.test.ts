@@ -2,8 +2,9 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
-import { createCortexMcpServer } from "../src/mcp/server.ts";
+import { createCortexMcpServer, providerResult } from "../src/mcp/server.ts";
 import type { AcademicRepository } from "../src/domain/repository.ts";
+import { ProviderError } from "../src/providers/errors.ts";
 
 const expectedTools = [
   "add_note","add_tag","archive_grade_model","archive_note","calculate_course_grade","clear_item_override","create_manual_item",
@@ -47,4 +48,16 @@ test("MCP deadline changes are persisted as overrides", async () => {
   assert.deepEqual(captured, { itemId, field: "due_at", value: dueAt });
   await client.close();
   await server.close();
+});
+
+test("MCP provider failures preserve typed safe errors", async () => {
+  const response = await providerResult(async () => {
+    throw new ProviderError("FILE_EXTRACTION_FAILED", "Unable to extract text from PDF");
+  });
+  assert.equal("isError" in response && response.isError, true);
+  assert.deepEqual(response.structuredContent, { result: { error: {
+    code: "FILE_EXTRACTION_FAILED",
+    message: "Unable to extract text from PDF",
+    retryable: false,
+  } } });
 });

@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import * as z from "zod/v4";
 import { AcademicService, createManualItemSchema } from "../domain/service.ts";
 import type { AcademicRepository } from "../domain/repository.ts";
+import { ProviderError } from "../providers/errors.ts";
 import { MoodleLiveService } from "../providers/moodle/live.ts";
 
 const uuid = z.string().uuid();
@@ -14,6 +15,16 @@ function result(value: unknown) {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],
     structuredContent: { result: value },
   };
+}
+
+export async function providerResult(operation: () => Promise<unknown>) {
+  try {
+    return result(await operation());
+  } catch (error) {
+    if (!(error instanceof ProviderError)) throw error;
+    const value = { error: { code: error.code, message: error.message, retryable: error.retryable } };
+    return { ...result(value), isError: true };
+  }
 }
 
 export function createCortexMcpServer(repository: AcademicRepository) {
@@ -139,7 +150,7 @@ export function createCortexMcpServer(repository: AcademicRepository) {
   server.registerTool("get_course_modules",{title:"Get live course modules",description:"Retrieve current Moodle section and activity metadata without persisting it.",inputSchema:{courseId:uuid},annotations:{...readAnnotations,openWorldHint:true}},async({courseId})=>result(await moodle.getCourseModules(courseId)));
   server.registerTool("get_course_resources",{title:"Get live course resources",description:"Retrieve current Moodle files, folders, pages, books, and URLs.",inputSchema:{courseId:uuid},annotations:{...readAnnotations,openWorldHint:true}},async({courseId})=>result(await moodle.getCourseResources(courseId)));
   server.registerTool("get_course_files",{title:"Get live course files",description:"Discover current Moodle file metadata and safe opaque file references.",inputSchema:{courseId:uuid},annotations:{...readAnnotations,openWorldHint:true}},async({courseId})=>result((await moodle.getCourseFiles(courseId)).map((file)=>({fileRef:file.fileRef,filename:file.filename,mimeType:file.mimeType,size:file.size,modifiedAt:file.modifiedAt,moduleId:file.moduleId,moduleTitle:file.moduleTitle}))));
-  server.registerTool("read_course_file",{title:"Read course file",description:"Securely download and extract a Moodle file through Cortex without exposing credentials or persisting the file.",inputSchema:{courseId:uuid,fileRef:z.string().min(20).max(200),offset:z.number().int().nonnegative().default(0),maxCharacters:z.number().int().min(1).max(100_000).default(30_000)},annotations:{...readAnnotations,openWorldHint:true}},async({courseId,fileRef,offset,maxCharacters})=>result(await moodle.readCourseFile(courseId,fileRef,offset,maxCharacters)));
+  server.registerTool("read_course_file",{title:"Read course file",description:"Securely download and extract a Moodle file through Cortex without exposing credentials or persisting the file.",inputSchema:{courseId:uuid,fileRef:z.string().min(20).max(200),offset:z.number().int().nonnegative().default(0),maxCharacters:z.number().int().min(1).max(100_000).default(30_000)},annotations:{...readAnnotations,openWorldHint:true}},async({courseId,fileRef,offset,maxCharacters})=>providerResult(()=>moodle.readCourseFile(courseId,fileRef,offset,maxCharacters)));
 
   server.registerTool("list_course_lectures",{title:"List course lectures",description:"List persisted Panopto lecture metadata for a Cortex course.",inputSchema:{courseId:uuid,from:dateTime.optional(),to:dateTime.optional()},annotations:readAnnotations},async({courseId,from,to})=>result(await repository.listCourseLectures(courseId,from,to)));
   server.registerTool("get_lecture",{title:"Get lecture",description:"Get lecture metadata, transcript status, and a bounded preview.",inputSchema:{lectureId:uuid},annotations:readAnnotations},async({lectureId})=>result(await repository.getLecture(lectureId)));

@@ -1,0 +1,1 @@
+export const MAX_COURSE_FILE_BYTES = 25 * 1024 * 1024;
