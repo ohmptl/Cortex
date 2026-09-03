@@ -1,5 +1,13 @@
 import type { AcademicItemType } from "@/domain/types";
 import { contentHash, sanitizeMoodlePayload } from "./sanitize.ts";
+import {
+  activityItemId,
+  calendarItemId,
+  forumItemId,
+  moduleItemId,
+  resolveMoodleDeadline,
+} from "../../../supabase/functions/_shared/moodle-academic.ts";
+import { isMoodleActivityComplete } from "../../../supabase/functions/_shared/completion.ts";
 
 type MoodleObject = Record<string, unknown>;
 
@@ -24,6 +32,8 @@ export interface ProjectionItem {
   sourceAvailableAt: string | null;
   sourceCloseAt: string | null;
   url: string | null;
+  status?: "not_started" | "completed";
+  completionState?: string | null;
   upstreamState: "present" | "missing";
   overrides: Record<string, unknown>;
 }
@@ -71,6 +81,7 @@ export interface MoodleSnapshot {
   events?: MoodleObject[];
   assignments?: MoodleObject[];
   quizzes?: MoodleObject[];
+  forums?: MoodleObject[];
   gradeItems?: Array<{ courseId: string; items: MoodleObject[] }>;
   completeScopes?: Array<"courses" | "contents" | "events" | "grades">;
   unsupportedCapabilities?: string[];
@@ -129,15 +140,6 @@ export function moodleModuleType(moduleName: unknown): AcademicItemType {
     case "url": return "reading";
     default: return "other";
   }
-}
-
-function eventIdentity(event: MoodleObject): string {
-  const moduleName = text(event.modulename ?? event.activityname).toLowerCase();
-  const instance = text(event.instance);
-  const cmid = text(event.cmid ?? event.contextinstanceid);
-  if (moduleName && instance) return `activity:${moduleName}:${instance}`;
-  if (cmid) return `course-module:${cmid}`;
-  return `calendar-event:${externalId(event, "unknown")}`;
 }
 
 function equalSource(a: unknown, b: unknown): boolean {
@@ -223,6 +225,9 @@ export async function projectMoodleSnapshot(
   }
 
   const modulesByCourseAndId = new Map<string, MoodleObject>();
+  const modulesByCourseAndActivity = new Map<string, MoodleObject>();
+  const forumModules = new Map<string, { courseId: string; module: MoodleObject }>();
+  const seenItems = new Set<string>();
   for (const content of snapshot.courseContents ?? []) {
     for (const section of content.sections) {
       const sectionId = externalId(section, text(section.section, "unknown"));
@@ -231,6 +236,12 @@ export async function projectMoodleSnapshot(
       for (const courseModule of modules) {
         const moduleId = externalId(courseModule, "unknown");
         modulesByCourseAndId.set(`${content.courseId}:${moduleId}`, courseModule);
+        const itemId = moduleItemId(courseModule);
+        if (itemId) {
+          seenItems.add(itemId);
+          modulesByCourseAndActivity.set(`${content.courseId}:${itemId}`, courseModule);
+          if (itemId.startsWith("activity:forum:")) forumModules.set(itemId, { courseId: content.courseId, module: courseModule });
+        }
         await applyRaw(state, "course-module", moduleId, content.courseId, courseModule, counters);
       }
     }
@@ -238,20 +249,88 @@ export async function projectMoodleSnapshot(
 
   const assignments = new Map((snapshot.assignments ?? []).map((item) => [text(item.id), item]));
   const quizzes = new Map((snapshot.quizzes ?? []).map((item) => [text(item.id), item]));
-  const seenItems = new Set<string>();
+  const forums = new Map((snapshot.forums ?? []).map((item) => [text(item.id ?? item.instance), item]));
+  for (const id of assignments.keys()) seenItems.add(activityItemId("assign", id)!);
+  for (const id of quizzes.keys()) seenItems.add(activityItemId("quiz", id)!);
+  for (const forum of forums.values()) {
+    const id = forumItemId(forum);
+    if (id) seenItems.add(id);
+  }
+
+  const eventsByItem = new Map<string, MoodleObject>();
+  for (const event of snapshot.events ?? []) {
+    const courseId = text(event.courseid);
+    const cmid = text(event.cmid ?? event.contextinstanceid ?? event.activityid);
+    const courseModule = modulesByCourseAndId.get(`${courseId}:${cmid}`);
+    const identity = calendarItemId(event, courseModule);
+    const prior = eventsByItem.get(identity);
+    const priorTime = timestamp(prior?.timesort ?? prior?.timestart);
+    const nextTime = timestamp(event.timesort ?? event.timestart);
+    if (!prior || (nextTime && (!priorTime || nextTime < priorTime))) eventsByItem.set(identity, event);
+  }
+
+  // Forums are first-class academic items. Their course-module identity is the
+  // canonical identity also used by calendar events, so the two sources merge.
+  const forumIdentities = new Set([...forumModules.keys(), ...[...forums.values()].map((forum) => forumItemId(forum)).filter((id): id is string => Boolean(id))]);
+  for (const identity of forumIdentities) {
+    const instanceId = identity.slice("activity:forum:".length);
+    const moduleRecord = forumModules.get(identity);
+    const forum = forums.get(instanceId) ?? {};
+    const courseId = text(forum.course) || moduleRecord?.courseId || "";
+    const cmid = text(forum.cmid) || text(moduleRecord?.module.id);
+    const courseModule = modulesByCourseAndId.get(`${courseId}:${cmid}`)
+      ?? modulesByCourseAndActivity.get(`${courseId}:${identity}`)
+      ?? moduleRecord?.module;
+    const event = eventsByItem.get(identity);
+    if (forums.has(instanceId)) await applyRaw(state, "forum", instanceId, courseId || null, forum, counters);
+    const previousItem = state.items[identity];
+    const completion = courseModule?.completiondata && typeof courseModule.completiondata === "object"
+      ? courseModule.completiondata as MoodleObject
+      : courseModule?.completion && typeof courseModule.completion === "object"
+        ? courseModule.completion as MoodleObject
+        : {};
+    const hasCompletion = completion.state !== undefined || completion.status !== undefined
+      || completion.complete !== undefined || completion.isoverallcomplete !== undefined;
+    const completed = isMoodleActivityComplete(completion);
+    const next: ProjectionItem = {
+      id: previousItem?.id ?? stableId("item", identity),
+      externalId: identity,
+      externalCourseId: courseId,
+      rawExternalId: externalId(event ?? forum, instanceId),
+      moduleExternalId: cmid || text(courseModule?.id) || null,
+      type: "discussion",
+      title: text(forum.name ?? courseModule?.name ?? event?.name, "Untitled Moodle forum"),
+      description: text(forum.intro ?? courseModule?.description ?? event?.description) || null,
+      sourceDueAt: resolveMoodleDeadline({ activity: forum, event, completion, previousDueAt: previousItem?.sourceDueAt, preservePrevious: true }),
+      sourceAvailableAt: timestamp(forum.timeopen ?? event?.timestart) ?? previousItem?.sourceAvailableAt ?? null,
+      sourceCloseAt: timestamp(forum.cutoffdate ?? forum.timeclose) ?? previousItem?.sourceCloseAt ?? null,
+      url: text(courseModule?.url ?? event?.url) || null,
+      status: completed ? "completed" : hasCompletion ? "not_started" : previousItem?.status ?? "not_started",
+      completionState: text(completion.state ?? completion.status) || previousItem?.completionState || null,
+      upstreamState: "present",
+      overrides: previousItem?.overrides ?? {},
+    };
+    applyEntity(state.items, identity, next, counters);
+  }
+
   for (const event of snapshot.events ?? []) {
     const eventId = externalId(event, "unknown");
     const courseId = text(event.courseid);
-    const identity = eventIdentity(event);
+    const cmid = text(event.cmid ?? event.contextinstanceid ?? event.activityid);
+    const courseModule = modulesByCourseAndId.get(`${courseId}:${cmid}`);
+    const identity = calendarItemId(event, courseModule);
     seenItems.add(identity);
     await applyRaw(state, "calendar-event", eventId, courseId || null, event, counters);
 
-    const moduleName = text(event.modulename ?? event.activityname).toLowerCase();
-    const instanceId = text(event.instance);
+    const moduleName = text(courseModule?.modname ?? event.modulename ?? event.activityname).toLowerCase();
+    const instanceId = text(courseModule?.instance ?? event.instance);
     const enrichment = moduleName === "assign" ? assignments.get(instanceId) : moduleName === "quiz" ? quizzes.get(instanceId) : undefined;
-    const cmid = text(event.cmid ?? event.contextinstanceid);
-    const courseModule = modulesByCourseAndId.get(`${courseId}:${cmid}`);
+    if (moduleName === "forum") continue;
     const previousItem = state.items[identity];
+    const completion = courseModule?.completiondata && typeof courseModule.completiondata === "object"
+      ? courseModule.completiondata as MoodleObject
+      : {};
+    const completed = isMoodleActivityComplete(completion);
     const next: ProjectionItem = {
       id: previousItem?.id ?? stableId("item", identity),
       externalId: identity,
@@ -259,21 +338,26 @@ export async function projectMoodleSnapshot(
       rawExternalId: eventId,
       moduleExternalId: cmid || null,
       type: moduleName ? moodleModuleType(moduleName) : "event",
-      title: text(enrichment?.name ?? event.name ?? courseModule?.name, "Untitled Moodle event"),
+      title: text(enrichment?.name ?? courseModule?.name ?? event.name, "Untitled Moodle event"),
       description: text(enrichment?.intro ?? event.description ?? courseModule?.description) || null,
-      sourceDueAt: timestamp(enrichment?.duedate ?? event.timesort ?? event.timestart),
+      sourceDueAt: resolveMoodleDeadline({ activity: enrichment, event, completion, previousDueAt: previousItem?.sourceDueAt }),
       sourceAvailableAt: timestamp(enrichment?.allowsubmissionsfromdate ?? enrichment?.timeopen ?? event.timestart),
       sourceCloseAt: timestamp(enrichment?.cutoffdate ?? enrichment?.timeclose),
       url: text(event.url ?? courseModule?.url) || null,
+      status: completed ? "completed" : previousItem?.status,
+      completionState: text(completion.state ?? completion.status) || previousItem?.completionState || null,
       upstreamState: "present",
       overrides: previousItem?.overrides ?? {},
     };
     applyEntity(state.items, identity, next, counters);
   }
 
-  if (snapshot.completeScopes?.includes("events")) {
+  if (snapshot.completeScopes?.includes("events") || snapshot.completeScopes?.includes("contents")) {
     for (const [id, item] of Object.entries(state.items)) {
-      if (!seenItems.has(id) && item.upstreamState === "present") {
+      const ownedByCompleteSource = id.startsWith("calendar-event:")
+        ? snapshot.completeScopes?.includes("events")
+        : snapshot.completeScopes?.includes("contents");
+      if (ownedByCompleteSource && !seenItems.has(id) && item.upstreamState === "present") {
         state.items[id] = { ...item, upstreamState: "missing" };
         counters.missing += 1;
       }
