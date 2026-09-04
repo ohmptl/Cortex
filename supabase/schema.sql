@@ -11,3 +11,4 @@
 \ir migrations/202609010008_completion_projection.sql
 \ir migrations/202609010009_mcp_oauth_audience_hook.sql
 \ir migrations/202609010010_three_domain_foundation.sql
+\ir migrations/202609040011_panopto_connector.sql

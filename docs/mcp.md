@@ -86,6 +86,8 @@ Safe write tools:
 
 No tool can mutate provider-derived grade or academic truth. Updating an effective field creates an override; personal grade interpretation is stored in separate grade-model rules. Live Moodle content and downloaded files are not persisted.
 
+Lecture tools read only Cortex's durable Supabase knowledge tables. The Custom Panopto Connector participates at ingestion time through `/api/connectors/panopto/manifest` and `/api/connectors/panopto/ingest`; MCP never contacts Panopto or the connector worker at query time.
+
 ## Connect a client
 
 Give an MCP-compatible client the HTTPS endpoint above and choose OAuth authentication. The client discovers Cortex protected-resource metadata, discovers Supabase OAuth, dynamically registers when supported, opens the Cortex consent screen, and stores the resulting access/refresh tokens.

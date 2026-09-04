@@ -3,9 +3,9 @@
 Cortex is a private academic context platform built around persistent student state, live provider-owned course content, and durable academic knowledge.
 
 ```text
-Moodle sync → student state ─┐
-Moodle live → course content ├→ Cortex UI + MCP
-Panopto sync → knowledge ────┘
+Moodle sync → student state ───────────┐
+Moodle live → course content ──────────┼→ Cortex UI + MCP
+Custom Panopto Connector → knowledge ──┘
 ```
 
 ## What Cortex includes
@@ -18,7 +18,7 @@ Panopto sync → knowledge ────┘
 - Relational grade categories/items with authoritative course/category association
 - Immutable provider grades plus user-owned grade models, overrides, notes, tags, completion, and reviews
 - Live Moodle announcements, modules, resources, files, and bounded document reading
-- Panopto OAuth, explicit folder mappings, canonical transcripts, deterministic segments, and lexical retrieval
+- Push-based Panopto connector, explicit folder mappings, canonical timed transcripts, deterministic segments, and lexical retrieval
 - Editorial Today, Calendar, Course, gradebook, lecture, and diagnostics views
 - OAuth-protected remote MCP read and safe-write tools
 
@@ -38,9 +38,9 @@ Moodle mirror tables, raw provider payload archives, fuzzy identity matching, pa
 3. Apply the destructive migrations with `supabase db reset` for local development, or `supabase migration up` against the intended database.
 4. Deploy `moodle-sync-dispatch` and `moodle-sync-worker` and configure their secrets.
 5. Create the single Supabase Auth user, then run `npm run dev`.
-6. Connect Moodle and run the first student-state sync. Configure Panopto OAuth, connect it from Settings, explicitly map folders, then run `npm run sync:panopto -- <course-uuid>`.
+6. Connect Moodle and run the first student-state sync. In Settings, generate a Panopto Connector token and explicitly map each Cortex course to one Panopto folder. Configure the external worker with the one-time token.
 
-Provider credentials and the service-role key remain server-side and encrypted with a 32-byte AES-GCM key. Provider tokens, authenticated file URLs, transcript bodies, and announcement bodies are excluded from diagnostics.
+Moodle credentials and the service-role key remain server-side. Cortex stores only the SHA-256 lookup hash of the high-entropy Panopto Connector token. Provider tokens, authenticated file URLs, transcript bodies, and announcement bodies are excluded from diagnostics.
 
 ## Checks
 
@@ -51,4 +51,4 @@ npm test
 npm run build
 ```
 
-See [architecture](docs/architecture.md), [MCP deployment and client connection](docs/mcp.md), and the [Vault-backed cron template](supabase/cron.sql.example).
+See [architecture](docs/architecture.md), [Panopto Connector contract](docs/panopto-connector.md), [MCP deployment and client connection](docs/mcp.md), and the [Vault-backed cron template](supabase/cron.sql.example).
