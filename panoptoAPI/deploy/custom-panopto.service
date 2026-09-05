@@ -1,0 +1,27 @@
+[Unit]
+Description=Custom Panopto Transcript Sync to Cortex
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=panopto-sync
+Group=panopto-sync
+WorkingDirectory=/opt/custom-panopto
+EnvironmentFile=/etc/custom-panopto/env
+ExecStart=/opt/custom-panopto/.venv/bin/python -m custom_panopto sync
+TimeoutStartSec=10min
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/custom-panopto /tmp
+
+# Journald logging
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

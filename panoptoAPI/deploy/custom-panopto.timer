@@ -1,0 +1,11 @@
+[Unit]
+Description=Run Custom Panopto Transcript Sync every 15 minutes
+
+[Timer]
+OnBootSec=2min
+OnUnitInactiveSec=15min
+AccuracySec=1min
+Unit=custom-panopto.service
+
+[Install]
+WantedBy=timers.target
