@@ -13,4 +13,4 @@ export function normalizeMoodleUrl(value: string): string {
   return url.toString().replace(/\/+$/, "");
 }
 
-export const MOODLE_SYNC_VERSION = "2026-09-12.1";
+export const MOODLE_SYNC_VERSION = "2026-09-12.5";

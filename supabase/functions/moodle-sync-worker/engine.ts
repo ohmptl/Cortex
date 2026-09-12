@@ -1,4 +1,5 @@
 import { actionEvents } from "./calendar.ts";
+import { getForumParticipation } from "./forum-participation.ts";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { text } from "../_shared/moodle-values.ts";
 type JsonObject = Record<string, unknown>;
@@ -28,7 +29,10 @@ export class StatePage extends Error {
   }
 }
 
-import { moodleCompletion } from "../_shared/completion.ts";
+import {
+  hasMoodleGradeResult,
+  moodleCompletion,
+} from "../_shared/completion.ts";
 import {
   activityItemId,
   calendarItemId,
@@ -50,10 +54,12 @@ const desired: Record<string, string[]> = {
     "mod_quiz_get_quizzes_by_courses",
     "mod_quiz_get_user_attempts",
     "mod_forum_get_forums_by_courses",
+    "mod_forum_get_forum_discussions",
+    "mod_forum_get_discussion_posts",
     "core_completion_get_activities_completion_status",
   ],
   grades: ["gradereport_user_get_grade_items"],
-  live: ["mod_forum_get_forum_discussions"],
+  live: [],
 };
 type Client = SupabaseClient;
 type Task = {
@@ -471,7 +477,9 @@ export async function state(ctx: Ctx, counts: SyncCounts) {
     const lookup = existingId
       ? await ctx.client
           .from("academic_items")
-          .select("id,source_due_at,status,completed_at")
+          .select(
+            "id,source_due_at,status,completed_at,completion_state,submission_state,submitted_at",
+          )
           .eq("id", existingId)
           .single()
       : { data: null, error: null };
@@ -542,16 +550,58 @@ export async function state(ctx: Ctx, counts: SyncCounts) {
       } catch (error) {
         optional(ctx, counts, "mod_quiz_get_user_attempts", error);
       }
-    const completed = moodleCompletion({
+    const primaryCompletion = moodleCompletion({
       module: module
         ? { ...module.row, completiondata: module.completion }
         : undefined,
       submission: submissionDetails,
       attempts,
     });
-    const submission = text(submissionDetails?.status) || null,
-      submittedAt = iso(submissionDetails?.timemodified),
-      isForum = normalizedName === "forum";
+    let completed = primaryCompletion;
+    const isForum = normalizedName === "forum";
+    let forumParticipation = null;
+    if (isForum && completed === null && inaccessible) {
+      counts.skipped++;
+      ctx.optional.push({
+        capability: "mod_forum_participation",
+        message: `${providerItemId}: Moodle reports uservisible=false; participation lookup skipped`,
+        skipped: true,
+      });
+    } else if (isForum && completed === null)
+      try {
+        forumParticipation = await getForumParticipation({
+          call: ctx.call,
+          baseUrl: ctx.baseUrl,
+          token: ctx.token,
+          forum: row,
+          forumId: instance,
+          userId: ctx.userId,
+          capabilities: ctx.allowed,
+        });
+        if (forumParticipation) completed = forumParticipation.completed;
+      } catch (error) {
+        optional(
+          ctx,
+          counts,
+          "mod_forum_participation",
+          new Error(
+            `${providerItemId}: ${error instanceof Error ? error.message : "Forum participation lookup failed"}`,
+          ),
+        );
+      }
+    // Once Moodle has established forum completion, loss of tracking or visibility
+    // is not evidence that the student's participation disappeared.
+    const preserveForumCompletion =
+      isForum &&
+      primaryCompletion === null &&
+      forumParticipation?.completed !== true &&
+      existing?.status === "completed";
+    if (preserveForumCompletion) completed = true;
+    const submission = forumParticipation?.completed
+        ? "submitted"
+        : text(submissionDetails?.status) || null,
+      submittedAt =
+        forumParticipation?.submittedAt ?? iso(submissionDetails?.timemodified);
     const dueAt = resolveMoodleDeadline({
       activity: row,
       event,
@@ -578,15 +628,26 @@ export async function state(ctx: Ctx, counts: SyncCounts) {
       source_due_at: dueAt,
       source_close_at: iso(row.cutoffdate ?? row.timeclose),
       url: module?.url || text(event?.url) || null,
-      submission_state: submission,
-      submitted_at: submission === "submitted" ? submittedAt : null,
-      completion_state: attempts
-        ? completed
-          ? "attempt:finished"
-          : "attempt:incomplete"
-        : module
-          ? text(module.completion.state ?? module.completion.status) || null
+      submission_state: preserveForumCompletion
+        ? existing?.submission_state
+        : submission,
+      submitted_at: preserveForumCompletion
+        ? existing?.submitted_at
+        : submission === "submitted"
+          ? submittedAt
           : null,
+      completion_state: forumParticipation?.completed
+        ? "forum:participated"
+        : preserveForumCompletion
+          ? existing?.completion_state
+          : attempts
+            ? completed
+              ? "attempt:finished"
+              : "attempt:incomplete"
+            : module
+              ? text(module.completion.state ?? module.completion.status) ||
+                null
+              : null,
       upstream_state: "present",
       provider_connection_id: ctx.connection_id,
       provider: "moodle",
@@ -856,7 +917,7 @@ export async function grades(ctx: Ctx, counts: SyncCounts) {
         module && instance
           ? await ctx.client
               .from("academic_items")
-              .select("id")
+              .select("id,status,completed_at")
               .eq("provider_connection_id", ctx.connection_id)
               .eq("provider_item_id", `activity:${module}:${instance}`)
               .maybeSingle()
@@ -906,6 +967,22 @@ export async function grades(ctx: Ctx, counts: SyncCounts) {
             .select("id")
             .single();
     if (result.error) throw result.error;
+    if (module === "forum" && academic?.id && hasMoodleGradeResult(row)) {
+      const completedAt =
+        values.graded_at ?? academic.completed_at ?? new Date().toISOString();
+      check(
+        await ctx.client
+          .from("academic_items")
+          .update({
+            status: "completed",
+            completion_state: "grade:posted",
+            submission_state: "graded",
+            completed_at: completedAt,
+            submitted_at: completedAt,
+          })
+          .eq("id", academic.id),
+      );
+    }
     const contentHash = await digest({
       score: values.score,
       minimum: values.minimum_score,

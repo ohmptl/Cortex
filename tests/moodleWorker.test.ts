@@ -284,11 +284,14 @@ test("Moodle-inaccessible activities retain reported state without an unauthoriz
   await db.query("select reconcile_moodle_course($1,'101','ENG','Communication',true)",[connection]);
   const call:MoodleCall=async<T>(_u:string,_t:string,fn:string)=>{
    if(fn!=='core_course_get_contents')throw new Error('Private lookup must not be called');
-   return [{id:1,modules:[{id:1550726,instance:112,modname:'assign',name:'Future team assignment',uservisible:false,completiondata:{state:0,uservisible:false}}]}] as T;
+   return [{id:1,modules:[
+    {id:1550726,instance:112,modname:'assign',name:'Future team assignment',uservisible:false,completiondata:{state:0,uservisible:false}},
+    {id:1550727,instance:113,modname:'forum',name:'Future restricted forum',uservisible:false,completion:0},
+   ]}] as T;
   };
-  const ctx={client:databaseClient(db),call,owner_id:OWNER,connection_id:connection,scope_external_id:'101',baseUrl:'https://moodle.test',token:'test',userId:'42',allowed:new Set(['core_course_get_contents','mod_assign_get_submission_status']),optional:[]} as unknown as Ctx;
+  const ctx={client:databaseClient(db),call,owner_id:OWNER,connection_id:connection,scope_external_id:'101',baseUrl:'https://moodle.test',token:'test',userId:'42',allowed:new Set(['core_course_get_contents','mod_assign_get_submission_status','mod_forum_get_forum_discussions','mod_forum_get_discussion_posts']),optional:[]} as unknown as Ctx;
   const result=counts();await state(ctx,result);
-  assert.equal(result.failed,0);assert.equal(result.skipped,1);assert.equal(ctx.optional[0].skipped,true);
-  assert.equal((await db.query<{status:string}>("select * from academic_items")).rows[0].status,'not_started');
+  assert.equal(result.failed,0);assert.equal(result.skipped,2);assert.ok(ctx.optional.every((row)=>row.skipped));
+  assert.ok((await db.query<{status:string}>("select * from academic_items")).rows.every((row)=>row.status==='not_started'));
  }finally{await db.close();}
 });
