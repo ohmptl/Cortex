@@ -22,6 +22,7 @@ export type AcademicItemStatus =
   | "cancelled";
 
 export interface Course {
+  mergedIntoId?: string | null;
   id: string;
   code: string;
   name: string;
@@ -33,6 +34,7 @@ export interface Course {
 }
 
 export interface AcademicItem {
+  mergedIntoId?: string | null;
   id: string;
   courseId: string | null;
   providerModuleId: string | null;

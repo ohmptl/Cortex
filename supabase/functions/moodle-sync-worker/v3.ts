@@ -1,84 +1,220 @@
-import { adminClient,decryptCredential,emptyCounts,hasServiceRole,iso,moodleCall,text,type JsonObject,type SyncCounts } from "../_shared/moodle.ts";
-import { hasMoodleGradeResult,isMoodleActivityComplete } from "../_shared/completion.ts";
-import { activityItemId,calendarItemId,forumItemId,missingMoodleItemIds,moduleItemId,resolveMoodleDeadline,unixTimestamp } from "../_shared/moodle-academic.ts";
+import { syncStepRows } from "./steps.ts";
+import {
+  adminClient,
+  decryptCredential,
+  emptyCounts,
+  hasServiceRole,
+  moodleCall,
+} from "../_shared/moodle.ts";
+import { MOODLE_SYNC_VERSION } from "../_shared/moodle-values.ts";
+import { bootstrap, state, grades, StatePage, type Ctx } from "./engine.ts";
 
-const desired:Record<string,string[]>={site:["core_webservice_get_site_info"],courses:["core_enrol_get_users_courses"],state:["core_course_get_contents","core_calendar_get_action_events_by_course","mod_assign_get_assignments","mod_assign_get_submission_status","mod_quiz_get_quizzes_by_courses","mod_forum_get_forums_by_courses","core_completion_get_activities_completion_status"],grades:["gradereport_user_get_grade_items"],live:["mod_forum_get_forum_discussions"]};
-type Client=ReturnType<typeof adminClient>;type Task={id:string;owner_id:string;sync_run_id:string;connection_id:string;phase:string;scope_external_id:string|null};type Ctx=Task&{client:Client;baseUrl:string;token:string;userId:string;allowed:Set<string>;optional:Array<{capability:string;message:string}>};
-const number=(value:unknown)=>{if(value===null||value===undefined||value===""||value==="-")return null;const n=Number(String(value).replace(/[^0-9.-]/g,""));return Number.isFinite(n)?n:null;};
-const kind=(name:string)=>({assign:"assignment",quiz:"quiz",forum:"discussion"} as Record<string,string>)[name]??"event";
-const fnNames=(site:JsonObject)=>Array.isArray(site.functions)?[...new Set(site.functions.flatMap((entry:unknown)=>typeof entry==="string"?[entry]:entry&&typeof entry==="object"?[text((entry as JsonObject).name)].filter(Boolean):[]))]:[];
-async function digest(value:unknown){const bytes=new TextEncoder().encode(JSON.stringify(value));return[...new Uint8Array(await crypto.subtle.digest("SHA-256",bytes))].map((n)=>n.toString(16).padStart(2,"0")).join("");}
-function optional(ctx:Ctx,counts:SyncCounts,capability:string,error:unknown){counts.failed++;ctx.optional.push({capability,message:error instanceof Error?error.message:"Optional provider call failed"});}
-async function localCourse(ctx:Ctx,externalId:string){const{data}=await ctx.client.from("course_provider_links").select("course_id").eq("connection_id",ctx.connection_id).eq("link_type","course").eq("external_id",externalId).maybeSingle();return data?.course_id as string|undefined;}
-
-async function bootstrap(ctx:Ctx,counts:SyncCounts){const site=await moodleCall<JsonObject>(ctx.baseUrl,ctx.token,"core_webservice_get_site_info"),allowed=new Set(fnNames(site)),capabilities=Object.entries(desired).flatMap(([group,names])=>names.map((name)=>({owner_id:ctx.owner_id,connection_id:ctx.connection_id,capability_name:name,diagnostic_group:group,desired:true,available:allowed.has(name)})));const{error:capError}=await ctx.client.from("provider_capabilities").upsert(capabilities,{onConflict:"connection_id,capability_name"});if(capError)throw capError;await ctx.client.from("provider_connections").update({external_user_id:text(site.userid),external_username:text(site.username)||null,display_name:text(site.fullname??site.sitename)||null,last_capability_check_at:new Date().toISOString(),status:"active"}).eq("id",ctx.connection_id);if(!allowed.has("core_enrol_get_users_courses"))throw new Error("Required capability core_enrol_get_users_courses is unavailable");const courses=await moodleCall<JsonObject[]>(ctx.baseUrl,ctx.token,"core_enrol_get_users_courses",{userid:site.userid}),active:string[]=[];for(const course of courses){const externalId=text(course.id),{data:link}=await ctx.client.from("course_provider_links").select("course_id").eq("connection_id",ctx.connection_id).eq("link_type","course").eq("external_id",externalId).maybeSingle(),values={owner_id:ctx.owner_id,code:text(course.shortname??course.idnumber,`Moodle ${externalId}`),name:text(course.fullname??course.displayname??course.shortname,`Moodle course ${externalId}`),active:course.visible!==false&&course.visible!==0,source_created_at:iso(course.timecreated),source_updated_at:iso(course.timemodified)};const result=link?.course_id?await ctx.client.from("courses").update(values).eq("id",link.course_id).select("id").single():await ctx.client.from("courses").insert(values).select("id").single();if(result.error)throw result.error;active.push(result.data.id);if(link)counts.updated++;else counts.inserted++;const{error}=await ctx.client.from("course_provider_links").upsert({owner_id:ctx.owner_id,course_id:result.data.id,connection_id:ctx.connection_id,provider:"moodle",link_type:"course",external_id:externalId,provider_url:`${ctx.baseUrl}/course/view.php?id=${externalId}`},{onConflict:"connection_id,link_type,external_id"});if(error)throw error;}let stale=ctx.client.from("courses").update({active:false}).eq("owner_id",ctx.owner_id);if(active.length)stale=stale.not("id","in",`(${active.join(",")})`);await stale;const tasks=courses.flatMap((course)=>{const id=text(course.id),rows:JsonObject[]=[];if(["core_course_get_contents","core_calendar_get_action_events_by_course","mod_assign_get_assignments","mod_quiz_get_quizzes_by_courses","mod_forum_get_forums_by_courses"].some((name)=>allowed.has(name)))rows.push({phase:"events",scope_external_id:id});if(allowed.has("gradereport_user_get_grade_items"))rows.push({phase:"grades",scope_external_id:id});return rows;});if(tasks.length){const{error}=await ctx.client.from("sync_tasks").upsert(tasks.map((row)=>({...row,owner_id:ctx.owner_id,sync_run_id:ctx.sync_run_id,connection_id:ctx.connection_id})),{onConflict:"sync_run_id,phase,scope_external_id"});if(error)throw error;}}
-
-type Module={id:string;name:string;instance:string;url:string|null;completion:JsonObject;row:JsonObject};
-async function state(ctx:Ctx,counts:SyncCounts){
-  const providerCourseId=ctx.scope_external_id!,courseId=await localCourse(ctx,providerCourseId);
-  if(!courseId)throw new Error(`Course ${providerCourseId} has no Cortex identity`);
-  const modules=new Map<string,Module>(),modulesByActivity=new Map<string,Module>();
-  let courseContentsComplete=false,assignmentsComplete=false,quizzesComplete=false,forumsComplete=false,calendarComplete=false;
-  if(ctx.allowed.has("core_course_get_contents")){
-    const sections=await moodleCall<JsonObject[]>(ctx.baseUrl,ctx.token,"core_course_get_contents",{courseid:providerCourseId});
-    courseContentsComplete=true;
-    for(const section of sections)for(const row of Array.isArray(section.modules)?section.modules as JsonObject[]:[]){
-      const id=text(row.id),name=text(row.modname).toLowerCase(),instance=text(row.instance),module={id,name,instance,url:text(row.url)||null,completion:row.completiondata&&typeof row.completiondata==="object"?row.completiondata as JsonObject:{},row};
-      modules.set(id,module);
-      const itemId=activityItemId(name,instance);if(itemId)modulesByActivity.set(itemId,module);
+type Task = Omit<
+  Ctx,
+  "client" | "call" | "baseUrl" | "token" | "userId" | "allowed" | "optional"
+>;
+function check(result: { error: unknown }) {
+  if (result.error) throw result.error;
+}
+async function process(
+  client: ReturnType<typeof adminClient>,
+  workerToken: string,
+  task: Task,
+) {
+  const deadline = Date.now() + 85000;
+  const started = new Date().toISOString(),
+    counts = emptyCounts(),
+    failures: Ctx["optional"] = [];
+  check(
+    await client
+      .from("sync_runs")
+      .update({
+        status: "running",
+        started_at: started,
+        heartbeat_at: started,
+        worker_version: MOODLE_SYNC_VERSION,
+      })
+      .eq("id", task.sync_run_id)
+      .eq("status", "queued"),
+  );
+  let credentialToken = "";
+  let message: string | null = null,
+    page: string[] | null = null;
+  try {
+    const [connectionResult, credentialResult, capabilityResult] =
+      await Promise.all([
+        client
+          .from("provider_connections")
+          .select("base_url,external_user_id,status")
+          .eq("id", task.connection_id)
+          .single(),
+        client
+          .from("provider_credentials")
+          .select("encrypted_payload")
+          .eq("connection_id", task.connection_id)
+          .single(),
+        client
+          .from("provider_capabilities")
+          .select("capability_name")
+          .eq("connection_id", task.connection_id)
+          .eq("available", true),
+      ]);
+    [connectionResult, credentialResult, capabilityResult].forEach(check);
+    const connection = connectionResult.data!,
+      credential = credentialResult.data!;
+    if (connection.status !== "active")
+      throw new Error("Moodle connection is disabled");
+    const { token } = await decryptCredential(credential.encrypted_payload);
+    credentialToken = token;
+    const ctx: Ctx = {
+      ...task,
+      client,
+      call: (url, token, fn, params) =>
+        moodleCall(url, token, fn, params, deadline),
+      baseUrl: connection.base_url,
+      token,
+      userId: connection.external_user_id ?? "",
+      allowed: new Set(
+        (capabilityResult.data ?? []).map((row) => row.capability_name),
+      ),
+      optional: failures,
+    };
+    if (task.phase === "bootstrap") await bootstrap(ctx, counts);
+    else if (task.phase === "events" || task.phase === "contents")
+      await state(ctx, counts);
+    else if (task.phase === "grades") await grades(ctx, counts);
+    else throw new Error(`Unknown phase ${task.phase}`);
+  } catch (error) {
+    if (error instanceof StatePage) page = error.written;
+    else {
+      message =
+        error instanceof Error
+          ? error.message
+          : ((error as { message?: string })?.message ?? "Sync failed");
+      if (credentialToken)
+        message = message.split(credentialToken).join("[REDACTED]");
+      counts.failed++;
     }
   }
-  if(ctx.allowed.has("core_completion_get_activities_completion_status"))try{
-    const result=await moodleCall<JsonObject>(ctx.baseUrl,ctx.token,"core_completion_get_activities_completion_status",{courseid:providerCourseId,userid:ctx.userId});
-    for(const status of Array.isArray(result.statuses)?result.statuses as JsonObject[]:[]){const module=modules.get(text(status.cmid));if(module)module.completion=status;}
-  }catch(error){optional(ctx,counts,"core_completion_get_activities_completion_status",error);}
-
-  let assignments:JsonObject[]=[],quizzes:JsonObject[]=[],forums:JsonObject[]=[],events:JsonObject[]=[];
-  if(ctx.allowed.has("mod_assign_get_assignments"))try{const result=await moodleCall<JsonObject>(ctx.baseUrl,ctx.token,"mod_assign_get_assignments",{courseids:[providerCourseId]});assignments=(Array.isArray(result.courses)?result.courses as JsonObject[]:[]).flatMap((course)=>Array.isArray(course.assignments)?course.assignments as JsonObject[]:[]);assignmentsComplete=true;}catch(error){optional(ctx,counts,"mod_assign_get_assignments",error);}
-  if(ctx.allowed.has("mod_quiz_get_quizzes_by_courses"))try{const result=await moodleCall<JsonObject>(ctx.baseUrl,ctx.token,"mod_quiz_get_quizzes_by_courses",{courseids:[providerCourseId]});quizzes=Array.isArray(result.quizzes)?result.quizzes as JsonObject[]:[];quizzesComplete=true;}catch(error){optional(ctx,counts,"mod_quiz_get_quizzes_by_courses",error);}
-  if(ctx.allowed.has("mod_forum_get_forums_by_courses"))try{forums=await moodleCall<JsonObject[]>(ctx.baseUrl,ctx.token,"mod_forum_get_forums_by_courses",{courseids:[providerCourseId]});forumsComplete=true;}catch(error){optional(ctx,counts,"mod_forum_get_forums_by_courses",error);}
-  if(ctx.allowed.has("core_calendar_get_action_events_by_course"))try{const result=await moodleCall<JsonObject>(ctx.baseUrl,ctx.token,"core_calendar_get_action_events_by_course",{courseid:providerCourseId,timesortfrom:Math.floor(Date.now()/1000)-30*86400,limitnum:500});events=Array.isArray(result.events)?result.events as JsonObject[]:[];calendarComplete=true;}catch(error){optional(ctx,counts,"core_calendar_get_action_events_by_course",error);}
-
-  const eventModule=(event:JsonObject)=>{let cmid=text(event.cmid??event.contextinstanceid??event.activityid);if(!cmid&&event.url)try{cmid=new URL(text(event.url)).searchParams.get("id")??"";}catch{}return modules.get(cmid);};
-  const eventsByItem=new Map<string,JsonObject>();
-  for(const event of events){const module=eventModule(event),itemId=calendarItemId(event,module?.row);const previous=eventsByItem.get(itemId),previousAt=unixTimestamp(previous?.timesort??previous?.timestart),nextAt=unixTimestamp(event.timesort??event.timestart);if(!previous||(nextAt&&(!previousAt||nextAt<previousAt)))eventsByItem.set(itemId,event);}
-  const forumByInstance=new Map(forums.map((row)=>[text(row.id??row.instance),row]));
-  const written=new Set<string>();
-
-  async function write(moduleName:string,instance:string,row:JsonObject,event?:JsonObject,explicitModule?:Module){
-    const normalizedName=moduleName.toLowerCase();let cmid=text(row.cmid??row.coursemodule??event?.cmid??event?.contextinstanceid??event?.activityid);
-    if(!cmid&&event?.url)try{cmid=new URL(text(event.url)).searchParams.get("id")??"";}catch{}
-    const module=explicitModule??modules.get(cmid)??modulesByActivity.get(activityItemId(normalizedName,instance)??"");
-    if(!cmid)cmid=module?.id??"";
-    const providerItemId=activityItemId(normalizedName,instance)??calendarItemId(event??{},module?.row);
-    const{data:existing}=await ctx.client.from("academic_items").select("id,source_due_at,status,completed_at").eq("provider_connection_id",ctx.connection_id).eq("provider_item_id",providerItemId).maybeSingle();
-    let submission:string|null=null,submitted=false,submittedAt:string|null=null;
-    if(normalizedName==="assign"&&ctx.allowed.has("mod_assign_get_submission_status"))try{const result=await moodleCall<JsonObject>(ctx.baseUrl,ctx.token,"mod_assign_get_submission_status",{assignid:instance}),details=((result.lastattempt as JsonObject|undefined)?.submission as JsonObject|undefined);submission=text(details?.status)||null;submitted=submission==="submitted";submittedAt=iso(details?.timemodified);}catch(error){optional(ctx,counts,"mod_assign_get_submission_status",error);}
-    const hasCompletion=Boolean(module&&(module.completion.state!==undefined||module.completion.status!==undefined||module.completion.complete!==undefined||module.completion.isoverallcomplete!==undefined)),moduleCompleted=Boolean(module&&isMoodleActivityComplete(module.completion)),completed=submitted||moduleCompleted,isForum=normalizedName==="forum";
-    const dueAt=resolveMoodleDeadline({activity:row,event,completion:module?.completion,previousDueAt:existing?.source_due_at,preservePrevious:isForum});
-    const values={owner_id:ctx.owner_id,course_id:courseId,origin:"provider",item_type:kind(normalizedName),title:text(row.name??module?.row.name??event?.name,"Untitled Moodle item"),description:text(row.intro??module?.row.description??event?.description)||null,source_start_at:iso(event?.timestart),source_available_at:iso(row.allowsubmissionsfromdate??row.timeopen),source_due_at:dueAt,source_close_at:iso(row.cutoffdate??row.timeclose),url:module?.url||text(event?.url)||null,submission_state:submission,completion_state:module?text(module.completion.state??module.completion.status)||null:null,upstream_state:"present",provider_connection_id:ctx.connection_id,provider:"moodle",provider_course_id:providerCourseId,provider_module_id:cmid||null,provider_instance_id:instance||null,provider_item_id:providerItemId,provider_url:module?.url||text(event?.url)||null,...(completed?{status:"completed",completed_at:submittedAt??iso(module?.completion.timecompleted)??existing?.completed_at??new Date().toISOString()}:isForum&&hasCompletion?{status:"not_started",completed_at:null}:{} )};
-    const result=existing?await ctx.client.from("academic_items").update(values).eq("id",existing.id).select("id").single():await ctx.client.from("academic_items").insert(values).select("id").single();if(result.error)throw result.error;
-    const contentHash=await digest({title:values.title,item_type:values.item_type,available_at:values.source_available_at,due_at:values.source_due_at,close_at:values.source_close_at,completion_state:values.completion_state,submission_state:values.submission_state});
-    await ctx.client.from("academic_item_source_history").upsert({owner_id:ctx.owner_id,academic_item_id:result.data.id,title:values.title,item_type:values.item_type,available_at:values.source_available_at,due_at:values.source_due_at,close_at:values.source_close_at,completion_state:values.completion_state,submission_state:values.submission_state,content_hash:contentHash},{onConflict:"academic_item_id,content_hash"});
-    written.add(providerItemId);existing?counts.updated++:counts.inserted++;
-  }
-
-  for(const row of assignments){const id=activityItemId("assign",row.id)!;await write("assign",text(row.id),row,eventsByItem.get(id));}
-  for(const row of quizzes){const id=activityItemId("quiz",row.id)!;await write("quiz",text(row.id),row,eventsByItem.get(id));}
-  for(const module of modules.values())if(module.name==="forum"&&module.instance){const id=activityItemId("forum",module.instance)!;await write("forum",module.instance,forumByInstance.get(module.instance)??module.row,eventsByItem.get(id),module);}
-  for(const forum of forums){const id=forumItemId(forum);if(id&&!written.has(id))await write("forum",text(forum.id??forum.instance),forum,eventsByItem.get(id));}
-  for(const event of events){const module=eventModule(event),id=calendarItemId(event,module?.row);if(!written.has(id))await write(module?.name??text(event.modulename).toLowerCase(),module?.instance??text(event.instance),{},event,module);}
-
-  const moduleItemIds=new Set([...modules.values()].map((module)=>moduleItemId(module.row)).filter((id):id is string=>Boolean(id))),calendarItemIds=new Set(events.map((event)=>calendarItemId(event,eventModule(event)?.row))),assignmentItemIds=new Set(assignments.map((row)=>activityItemId("assign",row.id)!).filter(Boolean)),quizItemIds=new Set(quizzes.map((row)=>activityItemId("quiz",row.id)!).filter(Boolean)),forumItemIds=new Set(forums.map(forumItemId).filter((id):id is string=>Boolean(id))),presentIds=new Set([...moduleItemIds,...calendarItemIds,...assignmentItemIds,...quizItemIds,...forumItemIds]);
-  if(presentIds.size)await ctx.client.from("academic_items").update({upstream_state:"present"}).eq("owner_id",ctx.owner_id).eq("provider_connection_id",ctx.connection_id).eq("provider_course_id",providerCourseId).in("provider_item_id",[...presentIds]);
-  const{data:existingItems,error:existingError}=await ctx.client.from("academic_items").select("provider_item_id").eq("owner_id",ctx.owner_id).eq("provider_connection_id",ctx.connection_id).eq("provider_course_id",providerCourseId).eq("origin","provider");if(existingError)throw existingError;
-  const missingIds=missingMoodleItemIds((existingItems??[]).map((row)=>text(row.provider_item_id)).filter(Boolean),{courseContentsComplete,calendarComplete,assignmentsComplete,quizzesComplete,forumsComplete,moduleItemIds,calendarItemIds,assignmentItemIds,quizItemIds,forumItemIds});
-  if(missingIds.length){const{error}=await ctx.client.from("academic_items").update({upstream_state:"missing"}).eq("owner_id",ctx.owner_id).eq("provider_connection_id",ctx.connection_id).eq("provider_course_id",providerCourseId).in("provider_item_id",missingIds);if(error)throw error;counts.missing+=missingIds.length;}
+  check(
+    await client
+      .from("sync_run_steps")
+      .insert(syncStepRows(task, counts, failures, message, started)),
+  );
+  check(
+    await client.rpc("settle_moodle_task", {
+      p_task_id: task.id,
+      p_worker_token: workerToken,
+      p_status: page ? "queued" : message ? "failed" : "succeeded",
+      p_counts: counts,
+      p_cursor: page ? { written: page } : {},
+      p_error: message,
+      p_version: MOODLE_SYNC_VERSION,
+    }),
+  );
+  return {
+    task: task.id,
+    run: task.sync_run_id,
+    phase: task.phase,
+    counts,
+    error: message,
+    checkpoint: Boolean(page),
+  };
 }
 
-async function grades(ctx:Ctx,counts:SyncCounts){const providerCourseId=ctx.scope_external_id!,courseId=await localCourse(ctx,providerCourseId);if(!courseId)throw new Error(`Course ${providerCourseId} has no Cortex identity`);const report=await moodleCall<JsonObject>(ctx.baseUrl,ctx.token,"gradereport_user_get_grade_items",{courseid:providerCourseId,userid:ctx.userId}),users=Array.isArray(report.usergrades)?report.usergrades as JsonObject[]:[],items=users.flatMap((row)=>Array.isArray(row.gradeitems)?row.gradeitems as JsonObject[]:[]),categories=new Map<string,string>();for(const[position,row]of items.filter((item)=>text(item.itemtype)==="category").entries()){const externalId=text(row.id??row.sortorder),values={owner_id:ctx.owner_id,course_id:courseId,name:text(row.itemname,"Grade category"),aggregation:text(row.aggregation)||null,weight:number(row.weightformatted),minimum_score:number(row.grademin),maximum_score:number(row.grademax),position,provider_connection_id:ctx.connection_id,provider:"moodle",provider_course_id:providerCourseId,provider_category_id:externalId},{data:existing}=await ctx.client.from("grade_categories").select("id").eq("provider_connection_id",ctx.connection_id).eq("provider_category_id",externalId).maybeSingle(),result=existing?await ctx.client.from("grade_categories").update(values).eq("id",existing.id).select("id").single():await ctx.client.from("grade_categories").insert(values).select("id").single();if(result.error)throw result.error;categories.set(externalId,result.data.id);}
-  for(const[position,row]of items.filter((item)=>text(item.itemtype)!=="category").entries()){const externalId=text(row.id??row.sortorder),module=text(row.itemmodule),instance=text(row.iteminstance),{data:academic}=module&&instance?await ctx.client.from("academic_items").select("id").eq("provider_connection_id",ctx.connection_id).eq("provider_item_id",`activity:${module}:${instance}`).maybeSingle():{data:null},values={owner_id:ctx.owner_id,course_id:courseId,category_id:categories.get(text(row.categoryid??row.parentid))??null,academic_item_id:academic?.id??null,name:text(row.itemname,"Grade item"),item_type:text(row.itemtype)||null,module_type:module||null,module_instance_id:instance||null,item_number:number(row.itemnumber),score:number(row.graderaw??row.gradeformatted),minimum_score:number(row.grademin),maximum_score:number(row.grademax),percentage:number(row.percentageformatted),weight:number(row.weightformatted),feedback:text(row.feedback)||null,hidden:row.hidden===true||row.hidden===1,position,graded_at:iso(row.gradedatesubmitted??row.gradedategraded),provider_connection_id:ctx.connection_id,provider:"moodle",provider_course_id:providerCourseId,provider_item_id:externalId},{data:existing}=await ctx.client.from("grade_items").select("id").eq("provider_connection_id",ctx.connection_id).eq("provider_item_id",externalId).maybeSingle(),result=existing?await ctx.client.from("grade_items").update(values).eq("id",existing.id).select("id").single():await ctx.client.from("grade_items").insert(values).select("id").single();if(result.error)throw result.error;const contentHash=await digest({score:values.score,minimum:values.minimum_score,maximum:values.maximum_score,percentage:values.percentage,weight:values.weight,graded_at:values.graded_at});await ctx.client.from("grade_item_source_history").upsert({owner_id:ctx.owner_id,grade_item_id:result.data.id,score:values.score,minimum_score:values.minimum_score,maximum_score:values.maximum_score,percentage:values.percentage,weight:values.weight,graded_at:values.graded_at,content_hash:contentHash},{onConflict:"grade_item_id,content_hash"});if(academic?.id&&hasMoodleGradeResult(row))await ctx.client.from("academic_items").update({status:"completed",completion_state:"graded",completed_at:values.graded_at??new Date().toISOString()}).eq("id",academic.id);existing?counts.updated++:counts.inserted++;}}
-
-async function process(client:Client,workerToken:string,task:Task){const started=new Date().toISOString();await client.from("sync_runs").update({status:"running",started_at:started,heartbeat_at:started}).eq("id",task.sync_run_id).eq("status","queued");const[{data:connection},{data:credential},{data:capabilities}]=await Promise.all([client.from("provider_connections").select("base_url,external_user_id").eq("id",task.connection_id).single(),client.from("provider_credentials").select("encrypted_payload").eq("connection_id",task.connection_id).single(),client.from("provider_capabilities").select("capability_name").eq("connection_id",task.connection_id).eq("available",true)]),counts=emptyCounts(),failures:Array<{capability:string;message:string}>=[];let message:string|null=null;try{if(!connection||!credential)throw new Error("Moodle credential is unavailable");const{token}=await decryptCredential(credential.encrypted_payload),ctx:Ctx={...task,client,baseUrl:connection.base_url,token,userId:connection.external_user_id??"",allowed:new Set((capabilities??[]).map((row)=>row.capability_name)),optional:failures};if(task.phase==="bootstrap")await bootstrap(ctx,counts);else if(task.phase==="events"||task.phase==="contents")await state(ctx,counts);else if(task.phase==="grades")await grades(ctx,counts);else throw new Error(`Unknown phase ${task.phase}`);}catch(error){message=error instanceof Error?error.message:"Sync failed";counts.failed++;}await client.from("sync_run_steps").insert([{owner_id:task.owner_id,sync_run_id:task.sync_run_id,capability_name:task.phase,scope_type:task.scope_external_id?"course":"connection",scope_external_id:task.scope_external_id,status:message?"failed":"succeeded",inserted_count:counts.inserted,updated_count:counts.updated,unchanged_count:counts.unchanged,missing_count:counts.missing,error_code:message?"sync_phase_failed":null,error_message:message,started_at:started,finished_at:new Date().toISOString()},...failures.map((failure)=>({owner_id:task.owner_id,sync_run_id:task.sync_run_id,capability_name:failure.capability,scope_type:task.scope_external_id?"course":"connection",scope_external_id:task.scope_external_id,status:"failed",error_code:"optional_endpoint_failed",error_message:failure.message,started_at:started,finished_at:new Date().toISOString()}))]);const{error}=await client.rpc("finish_sync_task",{p_task_id:task.id,p_worker_token:workerToken,p_final_status:message?"failed":"succeeded",p_inserted_delta:counts.inserted,p_updated_delta:counts.updated,p_unchanged_delta:counts.unchanged,p_missing_delta:counts.missing,p_skipped_delta:counts.skipped,p_failed_delta:counts.failed,p_error_code:message?"sync_phase_failed":null,p_error_message:message,p_mandatory_failure:task.phase==="bootstrap"&&Boolean(message)});if(error)throw error;return{task:task.id,run:task.sync_run_id,phase:task.phase,counts,error:message};}
-
-Deno.serve(async(request)=>{if(!hasServiceRole(request))return new Response("Unauthorized",{status:401});const client=adminClient(),token=crypto.randomUUID(),started=Date.now(),results:Awaited<ReturnType<typeof process>>[]=[];const body=await request.json().catch(()=>({})) as{runId?:unknown},runId=typeof body.runId==="string"&&/^[0-9a-f-]{36}$/i.test(body.runId)?body.runId:null;try{while(results.length<40&&Date.now()-started<(runId?105000:45000)){const{data,error}=await client.rpc("claim_sync_tasks_for_run",{worker_token:token,requested_run_id:runId,task_limit:Math.min(8,40-results.length),deadline_tasks_only:false});if(error)throw error;if(!data?.length)break;results.push(...await Promise.all((data as Task[]).map((task)=>process(client,token,task))));}let pending=client.from("sync_tasks").select("id",{count:"exact",head:true}).in("status",["queued","running"]);if(runId)pending=pending.eq("sync_run_id",runId);const{count}=await pending;return Response.json({processed:results.length,remaining:count??0,deadlinesRemaining:count??0,deadlineFailures:results.filter((result)=>result.error).length,elapsedMs:Date.now()-started,results});}catch(error){return Response.json({processed:results.length,error:error instanceof Error?error.message:"Worker failed",results},{status:500});}});
+Deno.serve(async (request) => {
+  if (!hasServiceRole(request))
+    return new Response("Unauthorized", { status: 401 });
+  if (request.method === "GET")
+    return Response.json({ workerVersion: MOODLE_SYNC_VERSION });
+  const client = adminClient(),
+    token = crypto.randomUUID(),
+    results = [];
+  const body = await request.json().catch(() => ({}));
+  const runId =
+    typeof body.runId === "string" && /^[0-9a-f-]{36}$/i.test(body.runId)
+      ? body.runId
+      : null;
+  try {
+    check(await client.rpc("recover_moodle_sync"));
+    const { data, error } = await client.rpc("claim_sync_tasks_for_run", {
+      worker_token: token,
+      requested_run_id: runId,
+      task_limit: 3,
+      deadline_tasks_only: false,
+    });
+    if (error) throw error;
+    // One bounded batch: no unattended promises after the Edge response.
+    const settled = await Promise.allSettled(
+      ((data ?? []) as Task[]).map((task) => process(client, token, task)),
+    );
+    for (const [index, result] of settled.entries()) {
+      if (result.status === "fulfilled") results.push(result.value);
+      else {
+        const message =
+          result.reason instanceof Error
+            ? result.reason.message
+            : ((result.reason as { message?: string })?.message ??
+              "Task settlement failed");
+        // Even a diagnostic-write failure must release the task or leave a
+        // concrete error explaining why lease recovery is required.
+        const fallback = await client.rpc("settle_moodle_task", {
+          p_task_id: data![index].id,
+          p_worker_token: token,
+          p_status: "failed",
+          p_counts: { ...emptyCounts(), failed: 1 },
+          p_cursor: {},
+          p_error: message,
+          p_version: MOODLE_SYNC_VERSION,
+        });
+        results.push({
+          task: data![index].id,
+          error: message,
+          settlementError: fallback.error?.message ?? null,
+        });
+      }
+    }
+    const { count, error: pendingError } = await client
+      .from("sync_tasks")
+      .select("id", { count: "exact", head: true })
+      .in("status", ["queued", "running"])
+      .match(runId ? { sync_run_id: runId } : {});
+    if (pendingError) throw pendingError;
+    const { count: deadlineCount, error: deadlineError } = await client
+      .from("sync_tasks")
+      .select("id", { count: "exact", head: true })
+      .in("status", ["queued", "running"])
+      .in("phase", ["bootstrap", "contents", "events"])
+      .match(runId ? { sync_run_id: runId } : {});
+    if (deadlineError) throw deadlineError;
+    return Response.json(
+      {
+        workerVersion: MOODLE_SYNC_VERSION,
+        processed: results.length,
+        remaining: count ?? 0,
+        deadlinesRemaining: deadlineCount ?? 0,
+        deadlineFailures: results.filter(
+          (result) =>
+            result.error ||
+            ("phase" in result &&
+              result.phase !== "grades" &&
+              result.counts.failed > 0),
+        ).length,
+        results,
+      },
+      { status: results.some((result) => result.error) ? 500 : 200 },
+    );
+  } catch (error) {
+    return Response.json(
+      {
+        workerVersion: MOODLE_SYNC_VERSION,
+        error:
+          error instanceof Error
+            ? error.message
+            : ((error as { message?: string })?.message ?? "Worker failed"),
+        results,
+      },
+      { status: 500 },
+    );
+  }
+});

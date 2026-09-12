@@ -19,9 +19,7 @@ export interface MoodleItemObservation {
   forumItemIds: ReadonlySet<string>;
 }
 
-function value(value: unknown): string {
-  return value === null || value === undefined ? "" : String(value);
-}
+import { text as value } from "./moodle-values.ts";
 
 export function activityItemId(moduleName: unknown, instance: unknown): string | null {
   const normalizedName = value(moduleName).trim().toLowerCase();

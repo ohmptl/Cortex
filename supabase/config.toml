@@ -1,0 +1,7 @@
+project_id = "cortex"
+
+[functions.moodle-sync-worker]
+verify_jwt = true
+
+[functions.moodle-sync-dispatch]
+verify_jwt = true

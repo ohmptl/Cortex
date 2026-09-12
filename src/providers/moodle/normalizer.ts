@@ -101,11 +101,7 @@ export function emptyProjectionState(): MoodleProjectionState {
   return { courses: {}, items: {}, gradeCategories: {}, gradeItems: {}, raw: {} };
 }
 
-function text(value: unknown, fallback = ""): string {
-  if (typeof value === "string") return value;
-  if (typeof value === "number") return String(value);
-  return fallback;
-}
+import { text } from "../../../supabase/functions/_shared/moodle-values.ts";
 
 function numberOrNull(value: unknown): number | null {
   if (value === null || value === undefined || value === "" || value === "-") return null;

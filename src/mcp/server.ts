@@ -180,6 +180,15 @@ export function createCortexMcpServer(repository: AcademicRepository) {
     annotations: { ...safeWriteAnnotations, idempotentHint: false },
   }, async ({ itemId, dueAt, title }) => result(await repository.scheduleReview(itemId, dueAt, title)));
 
+  server.registerTool("get_moodle_sync_status", {
+    title:"Get Moodle sync status", description:"Read connection, run/task health, last success, worker version, capability failures and reconciliation issues. Schedule is expected, not proof of cron wiring.",
+    annotations:readAnnotations,
+  }, async()=>result(await repository.getMoodleSyncStatus()));
+  server.registerTool("get_moodle_sync_run", {
+    title:"Inspect Moodle sync run", description:"Read one owner-scoped Moodle run with its tasks and capability steps.",
+    inputSchema:{runId:uuid}, annotations:readAnnotations,
+  }, async({runId})=>result(await repository.getMoodleSyncStatus(runId)));
+
   server.registerTool("trigger_moodle_sync", {
     title: "Trigger Moodle sync", description: "Queue an observable Moodle synchronization run. The tool cannot mutate raw source truth.",
     annotations: safeWriteAnnotations,

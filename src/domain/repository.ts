@@ -51,6 +51,7 @@ function throwIfError(error: { message: string } | null): void {
 function mapCourse(row: Row): Course {
   return {
     id: stringValue(row.id),
+    mergedIntoId:nullableString(row.merged_into_id),
     code: stringValue(row.effective_code ?? row.code),
     name: stringValue(row.effective_name ?? row.name),
     term: nullableString(row.effective_term ?? row.term),
@@ -64,6 +65,7 @@ function mapCourse(row: Row): Course {
 function mapItem(row: Row): AcademicItem {
   return {
     id: stringValue(row.id),
+    mergedIntoId:nullableString(row.merged_into_id),
     courseId: nullableString(row.course_id),
     providerModuleId: nullableString(row.provider_module_id),
     origin: row.origin === "provider" ? "provider" : "manual",
@@ -94,7 +96,7 @@ export class AcademicRepository {
   ) {}
 
   async listCourses(activeOnly = false): Promise<Course[]> {
-    let query = this.client.from("effective_courses").select("*").eq("owner_id", this.ownerId).order("effective_code");
+    let query = this.client.from("effective_courses").select("*").eq("owner_id", this.ownerId).is("merged_into_id",null).order("effective_code");
     if (activeOnly) query = query.eq("active", true);
     const { data, error } = await query;
     throwIfError(error);
@@ -143,8 +145,8 @@ export class AcademicRepository {
     if (!course) return null;
     const [items, categoriesResult, gradesResult,lecturesResult,notesResult,modelsResult] = await Promise.all([
       this.listAcademicItems({ courseId, includeMissing: true }),
-      this.client.from("grade_categories").select("*").eq("owner_id", this.ownerId).eq("course_id", courseId).order("position"),
-      this.client.from("grade_items").select("*").eq("owner_id", this.ownerId).eq("course_id", courseId).order("position"),
+      this.client.from("grade_categories").select("*").eq("owner_id", this.ownerId).eq("course_id", courseId).is("merged_into_id",null).order("position"),
+      this.client.from("grade_items").select("*").eq("owner_id", this.ownerId).eq("course_id", courseId).is("merged_into_id",null).order("position"),
       this.client.from("lectures").select("*").eq("owner_id",this.ownerId).eq("course_id",courseId).order("recorded_at",{ascending:false}),
       this.client.from("notes").select("*").eq("owner_id",this.ownerId).eq("course_id",courseId).is("archived_at",null).order("created_at",{ascending:false}),
       this.client.from("grade_models").select("*").eq("owner_id",this.ownerId).eq("course_id",courseId).is("archived_at",null).order("created_at"),
@@ -191,6 +193,12 @@ export class AcademicRepository {
       username: nullableString(row.external_username), displayName: nullableString(row.display_name),
       lastCapabilityCheckAt: nullableString(row.last_capability_check_at),
     };
+  }
+
+  async getMoodleSyncStatus(runId?: string) {
+    const {data,error}=await this.client.rpc("get_moodle_sync_status",{p_run_id:runId??null});
+    throwIfError(error);
+    return data;
   }
 
   async listCapabilities(connectionId: string): Promise<ProviderCapability[]> {

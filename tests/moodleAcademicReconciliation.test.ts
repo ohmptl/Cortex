@@ -73,3 +73,12 @@ test("forum deadlines prefer structured sources and preserve a prior deadline wh
   assert.equal(resolveMoodleDeadline({ previousDueAt: "2026-09-04T03:59:00.000Z" }), null);
 });
 
+
+test("assignment and quiz calendar CMIDs resolve to activity instance IDs",()=>{
+  for(const name of ['assign','quiz']){
+    const courseModule={id:1356315,instance:12345,modname:name};
+    assert.equal(moduleItemId(courseModule),`activity:${name}:12345`);
+    assert.equal(calendarItemId({id:99,instance:1356315,modulename:name},courseModule),`activity:${name}:12345`);
+    assert.equal(activityItemId(name,'12345'),`activity:${name}:12345`);
+  }
+});

@@ -11,7 +11,7 @@ type Row = Record<string, unknown>;
 export interface MoodleFile { fileRef: string; filename: string; mimeType: string | null; size: number | null; modifiedAt: string | null; moduleId: string; moduleTitle: string; providerUrl: string | null }
 export interface MoodleModule { providerId: string; sectionId: string; sectionTitle: string; title: string; type: string; visible: boolean; availability: unknown; completion: unknown; url: string | null; files: MoodleFile[] }
 
-function text(value: unknown): string { return typeof value === "string" ? value : ""; }
+import { text } from "../../../supabase/functions/_shared/moodle-values.ts";
 function num(value: unknown): number | null { const n = Number(value); return Number.isFinite(n) ? n : null; }
 function safeUrl(value: unknown): string | null {
   if (typeof value !== "string" || !value) return null;

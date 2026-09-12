@@ -24,14 +24,8 @@ export interface MoodleSiteInfo {
   [key: string]: unknown;
 }
 
-export function normalizeMoodleUrl(url: string): string {
-  const parsed = new URL(url.trim());
-  if (parsed.protocol !== "https:" && parsed.hostname !== "localhost") throw new Error("Moodle URL must use HTTPS");
-  parsed.pathname = parsed.pathname.replace(/\/$/, "");
-  parsed.search = "";
-  parsed.hash = "";
-  return parsed.toString().replace(/\/$/, "");
-}
+import { normalizeMoodleUrl } from "../../../supabase/functions/_shared/moodle-values.ts";
+export { normalizeMoodleUrl };
 
 function appendParameter(body: URLSearchParams, key: string, value: unknown): void {
   if (value === undefined || value === null) return;

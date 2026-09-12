@@ -1,5 +1,5 @@
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
-import { authenticateMcpRequest, allowedMcpOrigin, mcpResourceUrl } from "@/mcp/auth";
+import { authenticateMcpRequest, allowedMcpOrigin } from "@/mcp/auth";
 import { createCortexMcpServer } from "@/mcp/server";
 
 export const runtime = "nodejs";
@@ -55,8 +55,4 @@ export async function OPTIONS(request: Request) {
     "access-control-max-age": "86400",
     vary: "Origin",
   } });
-}
-
-export function resourceUrlForTests(requestUrl: string) {
-  return mcpResourceUrl(requestUrl);
 }
