@@ -68,12 +68,13 @@ class AuthSessionManager:
                 await self._perform_ncsu_login(page)
 
                 # Step 3: Validate successful login
-                if not await self._is_on_panopto(page):
-                    raise AuthError(f"Authentication ended on unexpected page: {page.url}")
+                cookies = await self._extract_cookies(context)
+                if ".ASPXAUTH" not in cookies or not cookies[".ASPXAUTH"]:
+                    raise AuthError(f"Authentication ended on unexpected page or missing .ASPXAUTH: {page.url}")
 
-                logger.info("Authentication succeeded. Resetting failure counters.")
+                logger.info("Authentication succeeded with valid session cookie. Resetting failure counters.")
                 self.state_db.reset_auth_failures()
-                return await self._extract_cookies(context)
+                return cookies
 
             finally:
                 await context.close()
@@ -128,23 +129,14 @@ class AuthSessionManager:
         ).first
         try:
             await sign_in_button.wait_for(state="visible", timeout=10000)
-            logger.info("Clicking Sign In to redirect to NC State Shibboleth...")
+            logger.info("Clicking Sign In to redirect to NC State authentication...")
             await sign_in_button.click()
             await page.wait_for_load_state("domcontentloaded", timeout=20000)
         except Exception as ex:
             logger.debug("Sign In button not clicked (might already be on SSO): %s", ex)
 
-
-        # Check if already on Panopto
-        if await self._is_on_panopto(page):
-            logger.info("Already on Panopto without re-authenticating.")
-            return
-
         # Check whether redirected to Microsoft Entra ID or legacy Shibboleth
-        logger.info("Filling NC State Unity credentials...")
-        ms_user = page.locator("input[name='loginfmt'], #i0116").first
-        shib_user = page.locator("#username, input[name='j_username']").first
-
+        logger.info("Waiting for NC State login form...")
         try:
             await page.wait_for_selector(
                 "input[name='loginfmt'], #i0116, #username, input[name='j_username']",
@@ -152,8 +144,12 @@ class AuthSessionManager:
             )
         except Exception:
             if await self._is_on_panopto(page):
-                logger.info("Already on Panopto without re-authenticating.")
+                logger.info("Already on Panopto with active session.")
                 return
+            raise
+
+        ms_user = page.locator("input[name='loginfmt'], #i0116").first
+        shib_user = page.locator("#username, input[name='j_username']").first
 
         if await ms_user.count() > 0 and await ms_user.is_visible():
             logger.info("Detected Microsoft Entra ID login flow...")
@@ -295,12 +291,17 @@ class AuthSessionManager:
 
     async def _is_on_panopto(self, page: Page) -> bool:
         url = page.url.lower()
-        return (
-            "panopto.com" in url
-            and "shibboleth" not in url
-            and "duo" not in url
-            and "microsoftonline.com" not in url
-        )
+        if "panopto.com" not in url:
+            return False
+        if "login.aspx" in url or "/auth/" in url:
+            return False
+        if any(idp in url for idp in ("shibboleth", "shib.ncsu.edu", "duo", "microsoftonline.com", "login.microsoftonline.com")):
+            return False
+        try:
+            cookies = await page.context.cookies()
+            return any(c["name"] == ".ASPXAUTH" and bool(c.get("value")) for c in cookies)
+        except Exception:
+            return False
 
     async def _extract_cookies(self, context: BrowserContext) -> dict[str, str]:
         """Extract cookies from browser context into a clean name->value dictionary."""
