@@ -135,35 +135,80 @@ class AuthSessionManager:
             logger.debug("Sign In button not clicked (might already be on SSO): %s", ex)
 
 
-        # Check if already redirected to Shibboleth login form
+        # Check if already on Panopto
+        if await self._is_on_panopto(page):
+            logger.info("Already on Panopto without re-authenticating.")
+            return
+
+        # Check whether redirected to Microsoft Entra ID or legacy Shibboleth
         logger.info("Filling NC State Unity credentials...")
-        user_input = page.locator("#username, input[name='j_username']").first
-        pass_input = page.locator("#password, input[name='j_password']").first
+        ms_user = page.locator("input[name='loginfmt'], #i0116").first
+        shib_user = page.locator("#username, input[name='j_username']").first
 
-        await user_input.wait_for(state="visible", timeout=20000)
-        await user_input.fill(self.config.ncsu_username)
-        await pass_input.fill(self.config.ncsu_password)
+        try:
+            await page.wait_for_selector(
+                "input[name='loginfmt'], #i0116, #username, input[name='j_username']",
+                timeout=20000,
+            )
+        except Exception:
+            if await self._is_on_panopto(page):
+                logger.info("Already on Panopto without re-authenticating.")
+                return
 
-        submit_btn = page.locator("#formSubmit, button[type='submit'], input[type='submit']").first
-        if await submit_btn.count() > 0:
+        if await ms_user.count() > 0 and await ms_user.is_visible():
+            logger.info("Detected Microsoft Entra ID login flow...")
+            raw_user = self.config.ncsu_username.strip()
+            email = raw_user if "@" in raw_user else f"{raw_user}@ncsu.edu"
+
+            await ms_user.fill(email)
+            await page.locator("#idSIButton9, input[type='submit']").first.click()
+
+            ms_pass = page.locator("input[name='passwd'], #i0118").first
+            await ms_pass.wait_for(state="visible", timeout=20000)
+            await ms_pass.fill(self.config.ncsu_password)
+
+            submit_btn = page.locator("#idSIButton9, input[type='submit']").first
             await submit_btn.click()
+
+            await asyncio.sleep(2.5)
+
+            # Check for Microsoft credential error
+            ms_error = page.locator("#passwordError, #usernameError, .error").first
+            if await ms_error.count() > 0 and await ms_error.is_visible():
+                err_text = await ms_error.inner_text()
+                new_failures = self.state_db.record_auth_failure(f"Microsoft login error: {err_text}")
+                if new_failures >= self.config.max_auth_attempts:
+                    self.config.set_auth_locked("Invalid credentials submitted 3 times consecutively")
+                    raise AuthCircuitBreakerError("Invalid credentials (3 strikes). Emergency circuit breaker engaged.")
+                raise AuthError(f"NC State login rejected credentials (attempt {new_failures}/{self.config.max_auth_attempts}): {err_text}")
+
         else:
-            await pass_input.press("Enter")
+            logger.info("Detected Shibboleth login flow...")
+            pass_input = page.locator("#password, input[name='j_password']").first
+            await shib_user.wait_for(state="visible", timeout=20000)
+            await shib_user.fill(self.config.ncsu_username)
+            await pass_input.fill(self.config.ncsu_password)
 
-        await asyncio.sleep(2.5)
+            submit_btn = page.locator("#formSubmit, button[type='submit'], input[type='submit']").first
+            if await submit_btn.count() > 0:
+                await submit_btn.click()
+            else:
+                await pass_input.press("Enter")
 
-        # Check for immediate credential failure
-        body_text = await page.inner_text("body")
-        if (
-            "The username or password you entered was incorrect" in body_text
-            or "Invalid username or password" in body_text
-            or "Authentication failed" in body_text
-        ):
-            new_failures = self.state_db.record_auth_failure("Invalid credentials submitted")
-            if new_failures >= self.config.max_auth_attempts:
-                self.config.set_auth_locked("Invalid credentials submitted 3 times consecutively")
-                raise AuthCircuitBreakerError("Invalid credentials (3 strikes). Emergency circuit breaker engaged.")
-            raise AuthError(f"NC State login rejected credentials (attempt {new_failures}/{self.config.max_auth_attempts})")
+            await asyncio.sleep(2.5)
+
+            # Check for immediate credential failure
+            body_text = await page.inner_text("body")
+            if (
+                "The username or password you entered was incorrect" in body_text
+                or "Invalid username or password" in body_text
+                or "Authentication failed" in body_text
+            ):
+                new_failures = self.state_db.record_auth_failure("Invalid credentials submitted")
+                if new_failures >= self.config.max_auth_attempts:
+                    self.config.set_auth_locked("Invalid credentials submitted 3 times consecutively")
+                    raise AuthCircuitBreakerError("Invalid credentials (3 strikes). Emergency circuit breaker engaged.")
+                raise AuthError(f"NC State login rejected credentials (attempt {new_failures}/{self.config.max_auth_attempts})")
 
         # Handle Duo screen and post-approval prompts
         logger.info("Waiting for Duo approval (external duoapprove service)...")
@@ -180,6 +225,28 @@ class AuthSessionManager:
             if await self._is_on_panopto(page):
                 logger.info("Successfully returned to Panopto!")
                 return
+
+            # Check for Microsoft 'Stay signed in?' prompt
+            try:
+                stay_btn = page.locator("#idSIButton9, input[value='Yes'], #declineButton").first
+                if await stay_btn.count() > 0 and await stay_btn.is_visible():
+                    logger.info("Dismissing Microsoft 'Stay signed in' prompt...")
+                    await stay_btn.click()
+            except Exception:
+                pass
+
+            # Check for Duo factor selection: click 'Send Me a Push' or 'Duo Push' if not automatic
+            try:
+                push_btn = page.locator(
+                    "button:has-text('Send Me a Push'), "
+                    "button:has-text('Duo Push'), "
+                    "button#auth-button"
+                ).first
+                if await push_btn.count() > 0 and await push_btn.is_visible():
+                    logger.info("Clicking 'Send Me a Push' on Duo screen...")
+                    await push_btn.click()
+            except Exception:
+                pass
 
             # Check for Duo post-approval prompt: "Your app needs to be updated" -> "Skip for now"
             try:
@@ -200,23 +267,26 @@ class AuthSessionManager:
                 )
                 if await trust_btn.count() > 0 and await trust_btn.first.is_visible():
                     logger.info("Answering Duo trust prompt ('Yes, this is my device')...")
-                    await trust_btn.first.click()
+                    await trust_btn.click()
             except Exception:
                 pass
 
             # Check if there's an iframe containing Duo (Duo Universal or legacy frame)
             for frame in page.frames:
                 try:
-                    f_skip = frame.locator("button:has-text('Skip for now'), button:has-text('Dismiss')")
-                    if await f_skip.count() > 0 and await f_skip.first.is_visible():
-                        await f_skip.first.click()
-                    f_trust = frame.locator("button:has-text('Yes, this is my device'), button#trust-browser-button")
-                    if await f_trust.count() > 0 and await f_trust.first.is_visible():
-                        await f_trust.first.click()
+                    f_push = frame.locator("button:has-text('Send Me a Push'), button:has-text('Duo Push'), button#auth-button").first
+                    if await f_push.count() > 0 and await f_push.is_visible():
+                        await f_push.click()
+                    f_skip = frame.locator("button:has-text('Skip for now'), button:has-text('Dismiss')").first
+                    if await f_skip.count() > 0 and await f_skip.is_visible():
+                        await f_skip.click()
+                    f_trust = frame.locator("button:has-text('Yes, this is my device'), button#trust-browser-button").first
+                    if await f_trust.count() > 0 and await f_trust.is_visible():
+                        await f_trust.click()
                 except Exception:
                     pass
 
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(2.0)
 
         # If timeout reached and still not on Panopto
         if not await self._is_on_panopto(page):
@@ -225,7 +295,12 @@ class AuthSessionManager:
 
     async def _is_on_panopto(self, page: Page) -> bool:
         url = page.url.lower()
-        return "panopto.com" in url and "shibboleth" not in url and "duo" not in url
+        return (
+            "panopto.com" in url
+            and "shibboleth" not in url
+            and "duo" not in url
+            and "microsoftonline.com" not in url
+        )
 
     async def _extract_cookies(self, context: BrowserContext) -> dict[str, str]:
         """Extract cookies from browser context into a clean name->value dictionary."""
