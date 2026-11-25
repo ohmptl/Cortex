@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from typing import Optional
+from urllib.parse import urlparse
 from playwright.async_api import async_playwright, BrowserContext, Page
 
 from .config import Config
@@ -102,8 +103,104 @@ class AuthSessionManager:
 
         return False
 
+    async def _is_visible(self, locator) -> bool:
+        """Safely check whether a Playwright locator exists and is visible."""
+        try:
+            return await locator.count() > 0 and await locator.is_visible()
+        except Exception:
+            return False
 
+    def _is_on_microsoft(self, page: Page) -> bool:
+        host = (urlparse(page.url).hostname or "").lower()
+        return host.endswith("microsoftonline.com")
 
+    def _is_on_duo(self, page: Page) -> bool:
+        host = (urlparse(page.url).hostname or "").lower()
+        return host.endswith("duosecurity.com")
+
+    def _ncsu_email(self) -> str:
+        raw_user = self.config.ncsu_username.strip()
+        return raw_user if "@" in raw_user else f"{raw_user}@ncsu.edu"
+
+    async def _is_entra_verification_prompt(self, page: Page) -> bool:
+        """Detect Microsoft Entra ID External Auth Method ('Verification Required' -> Duo) prompt."""
+        if not self._is_on_microsoft(page):
+            return False
+        if await self._is_visible(page.locator("#externalAuthHeader").first):
+            return True
+        continue_btn = page.locator(
+            "input#idSIButton9[value='Continue'], button#idSIButton9:has-text('Continue')"
+        ).first
+        return await self._is_visible(continue_btn)
+
+    async def _is_entra_kmsi_prompt(self, page: Page) -> bool:
+        """Detect Microsoft Entra ID 'Stay signed in?' (KMSI) prompt."""
+        if not self._is_on_microsoft(page):
+            return False
+        if await self._is_visible(page.locator("#KmsiDescription").first):
+            return True
+        yes_btn = page.locator(
+            "input#idSIButton9[value='Yes'], button#idSIButton9:has-text('Yes')"
+        ).first
+        return await self._is_visible(yes_btn)
+
+    async def _click_entra_continue(self, page: Page) -> bool:
+        """Click Continue on Entra ID's 'Verification Required' redirect screen."""
+        btn = page.locator(
+            "#idSIButton9, input[type='submit'][value='Continue'], button:has-text('Continue')"
+        ).first
+        if await self._is_visible(btn):
+            logger.info("Detected Microsoft Entra ID verification prompt; clicking Continue to NCSU Duo...")
+            await btn.click()
+            return True
+        return False
+
+    async def _click_entra_kmsi(self, page: Page) -> bool:
+        """Confirm Microsoft Entra ID 'Stay signed in?' prompt."""
+        btn = page.locator(
+            "#idSIButton9, input[type='submit'][value='Yes'], button:has-text('Yes')"
+        ).first
+        if await self._is_visible(btn):
+            logger.info("Dismissing Microsoft 'Stay signed in' prompt...")
+            await btn.click()
+            return True
+        return False
+
+    async def _handle_entra_account_picker(self, page: Page) -> bool:
+        """Select the configured NC State account from Entra ID's 'Pick an account' screen."""
+        if not self._is_on_microsoft(page):
+            return False
+        tiles_holder = page.locator("#tilesHolder").first
+        if not await self._is_visible(tiles_holder):
+            return False
+
+        email = self._ncsu_email()
+        exact_tile = page.locator(f"div[data-test-id='{email}']").first
+        if await self._is_visible(exact_tile):
+            logger.info("Detected Microsoft Entra ID account picker; selecting %s...", email)
+            await exact_tile.click()
+            return True
+
+        other_tile = page.locator("#otherTile").first
+        if await self._is_visible(other_tile):
+            logger.info("Detected Microsoft Entra ID account picker; selecting 'Use another account'...")
+            await other_tile.click()
+            return True
+
+        return False
+
+    def _record_credential_failure(self, reason: str, detail: Optional[str] = None) -> None:
+        """Record a credential rejection and trip the 3-strike circuit breaker if reached."""
+        new_failures = self.state_db.record_auth_failure(reason)
+        if new_failures >= self.config.max_auth_attempts:
+            self.config.set_auth_locked("Invalid credentials submitted 3 times consecutively")
+            raise AuthCircuitBreakerError(
+                "Invalid credentials (3 strikes). Emergency circuit breaker engaged."
+            )
+        suffix = f": {detail}" if detail else ""
+        raise AuthError(
+            f"NC State login rejected credentials (attempt {new_failures}/{self.config.max_auth_attempts}){suffix}"
+        )
 
     async def _perform_ncsu_login(self, page: Page) -> None:
         """Execute automated credential submission and Duo wait loop with 3-attempt circuit breaker."""
@@ -135,99 +232,149 @@ class AuthSessionManager:
         except Exception as ex:
             logger.debug("Sign In button not clicked (might already be on SSO): %s", ex)
 
-        # Check whether redirected to Microsoft Entra ID or legacy Shibboleth
-        logger.info("Waiting for NC State login form...")
-        try:
-            await page.wait_for_selector(
-                "input[name='loginfmt'], #i0116, #username, input[name='j_username']",
-                timeout=20000,
-            )
-        except Exception:
+        # Handle Microsoft Entra ID (including remembered-session / Verification Required states)
+        # or legacy Shibboleth until we reach Panopto or Duo verification.
+        logger.info("Waiting for NC State authentication state...")
+        loop = asyncio.get_running_loop()
+        step_timeout = 20.0
+        deadline = loop.time() + step_timeout
+
+        account_selected = False
+        username_submitted = False
+        password_submitted = False
+        needs_duo_wait = False
+
+        while loop.time() < deadline:
             if await self._is_on_panopto(page):
                 logger.info("Already on Panopto with active session.")
                 return
-            raise
 
-        ms_user = page.locator("input[name='loginfmt'], #i0116").first
-        shib_user = page.locator("#username, input[name='j_username']").first
+            if self._is_on_duo(page):
+                logger.info("Redirected to NCSU Duo verification...")
+                needs_duo_wait = True
+                break
 
-        if await ms_user.count() > 0 and await ms_user.is_visible():
-            logger.info("Detected Microsoft Entra ID login flow...")
-            raw_user = self.config.ncsu_username.strip()
-            email = raw_user if "@" in raw_user else f"{raw_user}@ncsu.edu"
+            # Entra External Auth Method interstitial ("Verification Required" -> NCSU Duo)
+            if await self._is_entra_verification_prompt(page):
+                if await self._click_entra_continue(page):
+                    needs_duo_wait = True
+                    await asyncio.sleep(1.5)
+                    break
 
-            await ms_user.fill(email)
-            await page.locator("#idSIButton9, input[type='submit']").first.click()
+            # Entra "Stay signed in?" (KMSI)
+            if await self._is_entra_kmsi_prompt(page):
+                if await self._click_entra_kmsi(page):
+                    deadline = loop.time() + step_timeout
+                    await asyncio.sleep(1.5)
+                    continue
 
+            # Entra "Pick an account" tile
+            if not account_selected and await self._handle_entra_account_picker(page):
+                account_selected = True
+                deadline = loop.time() + step_timeout
+                await asyncio.sleep(1.0)
+                continue
+
+            # Entra username prompt
+            ms_user = page.locator("input[name='loginfmt'], #i0116").first
+            if not username_submitted and await self._is_visible(ms_user):
+                logger.info("Detected Microsoft Entra ID login flow...")
+                await ms_user.fill(self._ncsu_email())
+                await page.locator("#idSIButton9, input[type='submit']").first.click()
+                username_submitted = True
+                deadline = loop.time() + step_timeout
+                await asyncio.sleep(1.0)
+
+                user_error = page.locator("#usernameError").first
+                if await self._is_visible(user_error):
+                    err_text = (await user_error.inner_text()).strip()
+                    if err_text:
+                        self._record_credential_failure(f"Microsoft login error: {err_text}", err_text)
+                continue
+
+            # Entra password prompt (either after username or directly when username is remembered)
             ms_pass = page.locator("input[name='passwd'], #i0118").first
-            await ms_pass.wait_for(state="visible", timeout=20000)
-            await ms_pass.fill(self.config.ncsu_password)
+            if not password_submitted and await self._is_visible(ms_pass):
+                logger.info("Detected Microsoft Entra ID password prompt...")
+                await ms_pass.fill(self.config.ncsu_password)
+                await page.locator("#idSIButton9, input[type='submit']").first.click()
+                password_submitted = True
+                await asyncio.sleep(2.5)
 
-            submit_btn = page.locator("#idSIButton9, input[type='submit']").first
-            await submit_btn.click()
+                ms_error = page.locator("#passwordError, #usernameError, .error").first
+                if await self._is_visible(ms_error):
+                    err_text = (await ms_error.inner_text()).strip()
+                    if err_text:
+                        self._record_credential_failure(f"Microsoft login error: {err_text}", err_text)
 
-            await asyncio.sleep(2.5)
+                needs_duo_wait = True
+                break
 
-            # Check for Microsoft credential error
-            ms_error = page.locator("#passwordError, #usernameError, .error").first
-            if await ms_error.count() > 0 and await ms_error.is_visible():
-                err_text = await ms_error.inner_text()
-                new_failures = self.state_db.record_auth_failure(f"Microsoft login error: {err_text}")
-                if new_failures >= self.config.max_auth_attempts:
-                    self.config.set_auth_locked("Invalid credentials submitted 3 times consecutively")
-                    raise AuthCircuitBreakerError("Invalid credentials (3 strikes). Emergency circuit breaker engaged.")
-                raise AuthError(f"NC State login rejected credentials (attempt {new_failures}/{self.config.max_auth_attempts}): {err_text}")
+            # Legacy Shibboleth login form
+            shib_user = page.locator("#username, input[name='j_username']").first
+            if not password_submitted and await self._is_visible(shib_user):
+                logger.info("Detected Shibboleth login flow...")
+                pass_input = page.locator("#password, input[name='j_password']").first
+                await shib_user.fill(self.config.ncsu_username)
+                await pass_input.fill(self.config.ncsu_password)
 
-        else:
-            logger.info("Detected Shibboleth login flow...")
-            pass_input = page.locator("#password, input[name='j_password']").first
-            await shib_user.wait_for(state="visible", timeout=20000)
-            await shib_user.fill(self.config.ncsu_username)
-            await pass_input.fill(self.config.ncsu_password)
+                submit_btn = page.locator("#formSubmit, button[type='submit'], input[type='submit']").first
+                if await submit_btn.count() > 0:
+                    await submit_btn.click()
+                else:
+                    await pass_input.press("Enter")
+                password_submitted = True
 
-            submit_btn = page.locator("#formSubmit, button[type='submit'], input[type='submit']").first
-            if await submit_btn.count() > 0:
-                await submit_btn.click()
-            else:
-                await pass_input.press("Enter")
+                await asyncio.sleep(2.5)
 
-            await asyncio.sleep(2.5)
+                body_text = await page.inner_text("body")
+                if (
+                    "The username or password you entered was incorrect" in body_text
+                    or "Invalid username or password" in body_text
+                    or "Authentication failed" in body_text
+                ):
+                    self._record_credential_failure("Invalid credentials submitted")
 
-            # Check for immediate credential failure
-            body_text = await page.inner_text("body")
-            if (
-                "The username or password you entered was incorrect" in body_text
-                or "Invalid username or password" in body_text
-                or "Authentication failed" in body_text
-            ):
-                new_failures = self.state_db.record_auth_failure("Invalid credentials submitted")
-                if new_failures >= self.config.max_auth_attempts:
-                    self.config.set_auth_locked("Invalid credentials submitted 3 times consecutively")
-                    raise AuthCircuitBreakerError("Invalid credentials (3 strikes). Emergency circuit breaker engaged.")
-                raise AuthError(f"NC State login rejected credentials (attempt {new_failures}/{self.config.max_auth_attempts})")
+                needs_duo_wait = True
+                break
+
+            await asyncio.sleep(0.5)
+
+        if not needs_duo_wait:
+            if await self._is_on_panopto(page):
+                logger.info("Already on Panopto with active session.")
+                return
+            raise AuthError(
+                f"Timed out waiting for recognized NC State login state (current URL: {page.url})"
+            )
 
         # Handle Duo screen and post-approval prompts
-        logger.info("Waiting for Duo approval (external duoapprove service)...")
+        logger.info("Waiting for Duo verification and post-approval prompts...")
         await self._wait_for_duo_and_prompts(page)
 
-
     async def _wait_for_duo_and_prompts(self, page: Page) -> None:
-        """Wait for external duoapprove to approve push and dismiss post-approval prompts."""
-        start_time = asyncio.get_event_loop().time()
+        """Wait for Duo verification completion and dismiss post-approval prompts."""
+        loop = asyncio.get_running_loop()
+        start_time = loop.time()
         max_time = self.config.duo_timeout_seconds
 
-        while (asyncio.get_event_loop().time() - start_time) < max_time:
+        while (loop.time() - start_time) < max_time:
             # If successfully redirected to Panopto, we are done!
             if await self._is_on_panopto(page):
                 logger.info("Successfully returned to Panopto!")
                 return
 
+            # Check for Microsoft Entra ID 'Verification Required' redirect to NCSU Duo
+            try:
+                if await self._is_entra_verification_prompt(page):
+                    await self._click_entra_continue(page)
+            except Exception:
+                pass
+
             # Check for Microsoft 'Stay signed in?' prompt
             try:
-                stay_btn = page.locator("#idSIButton9, input[value='Yes'], #declineButton").first
-                if await stay_btn.count() > 0 and await stay_btn.is_visible():
-                    logger.info("Dismissing Microsoft 'Stay signed in' prompt...")
-                    await stay_btn.click()
+                if await self._is_entra_kmsi_prompt(page):
+                    await self._click_entra_kmsi(page)
             except Exception:
                 pass
 
@@ -263,7 +410,7 @@ class AuthSessionManager:
                 )
                 if await trust_btn.count() > 0 and await trust_btn.first.is_visible():
                     logger.info("Answering Duo trust prompt ('Yes, this is my device')...")
-                    await trust_btn.click()
+                    await trust_btn.first.click()
             except Exception:
                 pass
 
